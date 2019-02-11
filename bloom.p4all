@@ -1,0 +1,73 @@
+/* ethernet, ipv4 headers, parsing, routing actions */
+
+symbolic int acccesses_stages;  
+assume();
+symbolic int registers;
+assume();
+
+
+// can't define metadata w/o knowing how many accesses per stages
+header_type bloom_metadata_t {
+    fields {
+	for (i = 0; i < accesses_stages; i++) {
+	    bit<11> index;
+	    bit<32> count;
+	}
+	bit<32> salt;
+    }
+}
+
+metadata bloom_metadata_t bloom_meta
+
+
+field_list hash_list {
+    ipv4.srcAddr;
+    ipv4.dstAddr;
+    ipv4.protocol;
+    bloom_meta.salt;
+}
+
+field_list_calculation stage_hash {
+    input {
+        hash_list;
+    }
+    algorithm : crc16;
+    output_width : 11;
+}
+
+register bloom {
+    width: 32
+    instance_count: registers;
+}
+
+
+salts = []	// see salts comment in cms.p4all
+// see comment in cms.p4all about identifying index values 
+for (i = 0; i < accesses_stages; i++) {
+    action count() {
+	modify_field_with_hash_based_offset(bloom_meta.index, 0, stage_hash, 11);
+	
+	bloom_meta.count = bloom[bloom_meta.index];
+
+	/* if counting bloom, increment and write new value */
+	/* bloom[bloom_meta.index] = bloom_meta.count + 1; */
+	/* membership bloom - set to 1 (if count = 1, unchanged, else set to 1) */
+	bloom[bloom_meta.index] = (bloom_meta.count == 0)? 1 : bloom_meta.count;	// = 1;
+    }
+}
+
+
+// apply each action from for loop to table
+table bloom {
+    actions { apply_actions(count, accesses_stages); }
+}
+
+
+control ingress {
+    apply(bloom);
+
+
+    /* apply forwarding logic */
+
+}
+
