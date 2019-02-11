@@ -1,0 +1,228 @@
+// QUERY FOR HEAVY HITTERS???? --> echo "register_read...." in read_registers.sh script (hashpipe backup code)
+
+
+// METADATA + GENERAL THINGS FOR ALL STAGES
+metadata tracking_metadata_t hh_meta;
+
+header_type tracking_metadata_t {
+    fields {
+        bit<32> mKeyInTable;
+        bit<32> mCountInTable;
+        bit<5> mIndex;
+        bit<1> mValid;
+        bit<32> mKeyCarried;
+        bit<32> mCountCarried;
+        bit<32> mDiff;
+	bit<32> salt;
+    }
+}
+
+field_list hash_list {
+    hh_meta.mKeyCarried;
+    hh_meta.salt;
+}
+
+field_list_calculation stage_hash {
+    input {
+        hash_list;
+    }
+    algorithm : crc16;
+    output_width : 5;
+}
+
+// STAGE 1
+/* field_list_calculation stage1_hash {
+    input {
+        hash_list;
+    }
+    algorithm : my_hash_1;
+    output_width : 5;
+}
+*/
+
+register flow_tracker_stage1 {
+    width: 32;
+    static: track_stage1;
+    instance_count: 32;
+}
+
+register packet_counter_stage1 {
+    width: 32;
+    static: track_stage1;
+    instance_count: 32;
+}
+
+register valid_bit_stage1 {
+    width: 1;
+    static: track_stage1;
+    instance_count: 32;
+}
+
+action do_stage1(){
+    hh_meta.salt = 13;
+    // first table stage
+    hh_meta.mKeyCarried = ipv4.srcAddr;
+    hh_meta.mCountCarried = 0;
+
+    // hash using my custom function
+    modify_field_with_hash_based_offset(hh_meta.mIndex, 0, stage1_hash,
+    32);
+
+    // read the key and value at that location
+    hh_meta.mKeyInTable = flow_tracker_stage1[hh_meta.mIndex];
+    hh_meta.mCountInTable = packet_counter_stage1[hh_meta.mIndex];
+    hh_meta.mValid = valid_bit_stage1[hh_meta.mIndex];
+
+    // check if location is empty or has a differentkey in there
+    hh_meta.mKeyInTable = (hh_meta.mValid == 0)? hh_meta.mKeyCarried : hh_meta.mKeyInTable;
+    hh_meta.mDiff = (hh_meta.mValid == 0)? 0 : hh_meta.mKeyInTable - hh_meta.mKeyCarried;
+
+    // update hash table
+    flow_tracker_stage1[hh_meta.mIndex] = ipv4.srcAddr;
+    packet_counter_stage1[hh_meta.mIndex] = ((hh_meta.mDiff == 0)?
+    hh_meta.mCountInTable + 1 : 1);
+    valid_bit_stage1[hh_meta.mIndex] = 1;
+
+    // update metadata carried to the next table stage
+    hh_meta.mKeyCarried = ((hh_meta.mDiff == 0) ? 0:
+    hh_meta.mKeyInTable);
+    hh_meta.mCountCarried = ((hh_meta.mDiff == 0) ? 0:
+    hh_meta.mCountInTable);
+}
+
+table track_stage1 {
+    actions { do_stage1; }
+    size: 0;
+}
+
+
+
+
+// STAGE 2+
+// things specific to the stage: registers, hash function (field list calc)
+
+symbolic int N;
+assume(0 < N && N <= 8);
+//assert(0 < N && N <= 8);
+
+// ARRAY FOR HASH FUNCTIONS??? - list of strings for field_list_calculation algorithm field
+// functions defined in bmv2 target
+//hashes = [my_hash2, my_hash3, my_hash4, my_hash5, my_hash6, my_hash7, my_hash8, my_hash9]
+
+// list of salts for each stage instead of hash function names
+salts = [29, 191, 19, 37, 157, 5783, 523, 8861]
+
+
+for(i = 0; i < N; i++) {
+
+	// GENERALIZE??
+	// when roll out into p4 program, will have to rename field list calc, registers, action, table so unique for each stage
+	// ELSE give unique names here??? how?
+
+
+	/*
+	// input to hash has seed in it, array has seeds so don't need to redefine field list calc for every stage
+	field_list_calculation stage_hash {
+	    input {
+	        hash_list;
+	    }
+	    algorithm : hashes[i];
+	    output_width : 5;
+	}
+	*/
+
+	// instead of declaring new field_list_calc for each stage, set different salt
+	hh_meta.salt = salts[i];
+
+	// THE SIZE OF THE TABLE IS VARIABLE, CHANGES W/ NUMBER OF STAGES
+	register flow_tracker_stage {
+	    width: 32;
+	    static: track_stage;
+	    instance_count: 32;
+	}
+
+	register packet_counter_stage {
+	    width: 32;
+	    static: track_stage;
+	    instance_count: 32;
+	}
+
+	register valid_bit_stage {
+	    width: 1;
+	    static: track_stage;
+	    instance_count: 32;
+	}
+
+	action do_stage(){
+	    // hash using my custom function 
+	    modify_field_with_hash_based_offset(hh_meta.mIndex, 0, stage_hash,
+	    32);
+
+	    // read the key and value at that location
+	    hh_meta.mKeyInTable = flow_tracker_stage[hh_meta.mIndex];
+	    hh_meta.mCountInTable = packet_counter_stage[hh_meta.mIndex];
+	    hh_meta.mValid = valid_bit_stage[hh_meta.mIndex];
+
+	    // check if location is empty or has a differentkey in there
+	    hh_meta.mKeyInTable = (hh_meta.mValid == 0)? hh_meta.mKeyCarried : hh_meta.mKeyInTable;
+	    hh_meta.mDiff = (hh_meta.mValid == 0)? 0 : hh_meta.mKeyInTable - hh_meta.mKeyCarried;
+
+	    // update hash table
+	    flow_tracker_stage[hh_meta.mIndex] = ((hh_meta.mDiff == 0)?
+	    hh_meta.mKeyInTable : ((hh_meta.mCountInTable <
+	    hh_meta.mCountCarried) ? hh_meta.mKeyCarried :
+	    hh_meta.mKeyInTable));
+
+	    packet_counter_stage[hh_meta.mIndex] = ((hh_meta.mDiff == 0)?
+	    hh_meta.mCountInTable + hh_meta.mCountCarried :
+	    ((hh_meta.mCountInTable < hh_meta.mCountCarried) ?
+	    hh_meta.mCountCarried : hh_meta.mCountInTable));
+
+	    valid_bit_stage[hh_meta.mIndex] = ((hh_meta.mValid == 0) ?
+	    ((hh_meta.mKeyCarried == 0) ? (bit<1>)0 : 1) : (bit<1>)1);
+
+	    // update metadata carried to the next table stage
+	    hh_meta.mKeyCarried = ((hh_meta.mDiff == 0) ? 0:
+	    hh_meta.mKeyInTable);
+	    hh_meta.mCountCarried = ((hh_meta.mDiff == 0) ? 0:
+	    hh_meta.mCountInTable);  
+	}
+
+
+	table track_stage {
+	    actions { do_stage; }
+	    size: 0;
+	}
+       
+}
+
+
+// MAXIMIZE SOME UTILITY FUNCTION
+maximize(N/totalstages);
+// utility function is step function / dict of parameter vals : accuracy/utility
+// need to add dict to p4 --> this is similar to python, make it similar to c++??
+utility = {0:0, 1:0, 2:.1, 3:.2, 4:.3, 5:.9, 6:1, 7:.9, 8:.7};	// this DOES include first stage, 1 + symbolic variable
+
+
+
+// CONTROL FLOW
+control ingress {
+    apply(track_stage1);
+    // add apply_tables function to p4all --> this ONLY works with simple control flow, no conditionals in between stages 
+    apply_tables(track_stage,N);
+
+    if(valid(ipv4)) {
+        if(ipv4.ttl > 1) {
+            apply(ipv4_lpm);
+            apply(forward);
+        } else {
+            apply(drop_expired);
+        }
+    }
+}
+
+control egress {
+    apply(send_frame);
+}
+
+
