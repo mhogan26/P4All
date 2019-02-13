@@ -1,0 +1,63 @@
+/* ethernet, ipv4 headers, parsing, routing actions */
+
+
+// define registers??? -> don't know how many registers we have until know # stages
+
+
+symbolic int stages;
+assume();
+symbolic int acccesses_stages; // maybe this needs to be a list of values whose length = # stages (not necessarily the same number for each stage) 
+assume();
+
+// want to compare N values
+// each stage doesn't need the same number of accesses - so how do we allocate them? we can't just allocate accesses/stage, we have to allocate accesses for each stage
+// this issue also comes up in cms
+symbolic int N
+assume()
+
+
+// metadata??? - how many values in metadata??
+// init metadata values???
+
+/* first half - comparing values */
+// how to add this to tables??? how many tables??? -> does each action get its own table??
+for (i = 0; i < N; i++){
+    action read_compare() {
+	/* read value into memory */
+	METADATA = REGISTER[INDEX];
+	/* compare */
+	META_MIN = (META_MIN < METADATA)? META_MIN : METADATA;
+    }
+}
+
+
+symbolic int v = max(accesses_stages);
+
+
+/* second half - find min from remaining values */
+// what is a bundle for this half? is it a single comparison? or is it a single stage of comparisons?
+// this doesn't require register accesses so maybe it doens't have to be a single comparison??
+
+for (i = 0; i < log(v); i++) {
+    /* compare pairs of values */ - for loop???
+    action do_compare() {
+	for (j = 0; j < log(v)/2; j++) {
+
+
+	}
+    }
+    table compare {
+	actions { do_compare;}
+    }
+}
+
+
+
+control ingress {
+    // apply first half
+
+    // apply second half tables
+    apply_tables(compare, log(v));
+
+    /* apply forwarding logic */
+}
