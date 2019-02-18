@@ -36,7 +36,7 @@ symbolic int v = max(accesses_stages);
 
 /* second half - find min from remaining values */
 // what is a bundle for this half? is it a single comparison? or is it a single stage of comparisons?
-// this doesn't require register accesses so maybe it doens't have to be a single comparison??
+// this doesn't require register accesses so maybe it doesn't have to be a single comparison??
 
 for (i = 0; i < log(v); i++) {
     /* compare pairs of values */ - for loop???
