@@ -1,0 +1,199 @@
+/* -*- P4_16 -*- */
+#define HASH_BASE 10w0
+#define HASH_MAX 10w1023
+
+/* ethernet and ipv4 headers + parsers */
+/* dummy ingress processing */
+
+
+symbolic int num_arrays;
+
+struct custom_metadata_t {
+	bit<64> my_flowID;
+	bit<64> my_estimated_count;
+	bit<1> already_matched;
+
+	bit<64> carry_min;
+	bit<64> carry_min_plus_one;
+	bit<8> min_stage;
+	bit<1> do_recirculate;
+	bit<9> orig_egr_port;
+
+	for (int i = 0; i < num_arrays; i++) {
+	    bit<32> hashed_address_s;
+	}
+
+	bit<64> random_bits;
+	bit<12> random_bits_short;
+}
+
+// =========== Start implementation of PRECISION ============
+// A brief introduction to Precision algorithm:
+// 1. We maintain many (flow ID, packet count) tuples
+// 2. When new packet comes and a tuple already exist for this flow, we increment the counter.
+//    Otherwise, we simulate Space-Saving/RAP algorithm, find the approximate minimum counter and evict.
+// 3. We use recirculation to evict entry and evict with probability 1/(min+1).
+// In this example, we implement d=3 version of PRECISON, which maintain 3 pairs of flow tables.
+
+
+// this is all defined in the egress pipeline
+
+symoblic int total_registers;
+symbolic int FLOW_TABLE_SIZE_EACH = total_registers/num_arrays;
+
+
+// does this happen just once per packet? doesn't need to be included in bundle(?)
+// (still defined in control egress)
+        action commpute_flow_id () {
+                meta.my_flowID[31:0]=hdr.ipv4.srcAddr;
+                meta.my_flowID[63:32]=hdr.ipv4.dstAddr;
+        }
+// only defined once, not conditional on resources (not in bundle)
+// defined in egress control
+        action clone_and_recirc_replace_entry(){
+                // We need to set up a mirror ID in order to make this work.
+                // Use simple_switch_CLI: mirroring_add 0 0
+                #define MIRROR_ID 0
+                clone3<custom_metadata_t>(CloneType.E2E, MIRROR_ID, meta);
+                // Recirculated packets carried meta.min_stage and meta.count_min, so they themselves know what to do.
+        }
+
+// HOW DOES THIS TABLE SIZE FACTOR INTO RESOURCE CONSUMPTION?? - NOT PART OF BUNDLE
+
+        // original code has naive approximation too
+        table better_approximation {
+                // Goal: recirculate using probability 1/(2^x*T) nearest to 1/(carry_min+1), x between [1..63], T between [8..15]
+                actions = {
+            NoAction();
+                        clone_and_recirc_replace_entry();
+        }
+        key = {
+            meta.carry_min_plus_one: ternary;
+                        meta.random_bits: ternary;
+                        meta.random_bits_short: range;
+        }
+        size = 128;
+                default_action = NoAction();
+                const entries = {
+#include "entries_better.p4"
+                }
+        }
+
+
+
+for (int i = 0; i < num_arrays; i++) {
+ register<bit<64> >(FLOW_TABLE_SIZE_EACH)  flow_table_ids;
+ register<bit<64> >(FLOW_TABLE_SIZE_EACH)  flow_table_ctrs;
+
+ // each hashed_address_s is different for each iteration
+ // each iteration has different values for hash (3w5, 2w0, etc.)
+ action compute_reg_index () {
+                hash(meta.hashed_address_s, HashAlgorithm.crc16, HASH_BASE,
+                                {hdr.ipv4.srcAddr, 7w11, hdr.ipv4.dstAddr}, HASH_MAX);
+        }
+
+
+}
+	apply {
+		commpute_flow_id();
+		for (int i = 0; i < num_arrays; i++) {
+			compute_reg_index();
+		}
+
+		bit<64> tmp_existing_flow_id;
+		bit<64> tmp_existing_flow_count;
+
+		meta.my_estimated_count=0;
+
+		if(standard_metadata.instance_type==0){
+			// Regular incoming packets.
+			// We check if the flow ID is already in the flow table.
+			// If not, we remember the minimum counter we've seen so far.
+
+		
+			// TABLE ONE IS A SPECIAL CASE (the else ALWAYS sets to min) - can put this in for loop with condition on index
+                        // access table 1
+                        flow_table_ids.read(tmp_existing_flow_id, meta.hashed_address_s1);
+                        flow_table_ctrs_1.read(tmp_existing_flow_count, meta.hashed_address_s1);
+                        if(tmp_existing_flow_count==0 || tmp_existing_flow_id==meta.my_flowID){
+                                flow_table_ids_1.write(meta.hashed_address_s1, meta.my_flowID);
+                                flow_table_ctrs_1.write(meta.hashed_address_s1, tmp_existing_flow_count+1);
+
+                                meta.my_estimated_count=tmp_existing_flow_count+1;
+                                meta.already_matched=1;
+
+                        }else{  
+                                //save min_stage
+                                //special case for first stage: always min
+                                meta.carry_min=tmp_existing_flow_count;
+                                meta.min_stage=1;
+                        }
+
+
+
+			// NAMING OF ARRAYS / HASHED_ADDRESS
+			for (int i = 1; i < num_arrays; i++) {
+				// access table
+				if(meta.already_matched==0){
+					flow_table_ids.read(tmp_existing_flow_id, meta.hashed_address);
+					flow_table_ctrs.read(tmp_existing_flow_count, meta.hashed_address);
+					if(tmp_existing_flow_count==0 || tmp_existing_flow_id==meta.my_flowID){
+						flow_table_ids.write(meta.hashed_address, meta.my_flowID);
+						flow_table_ctrs.write(meta.hashed_address, tmp_existing_flow_count+1);
+
+						meta.my_estimated_count=tmp_existing_flow_count+1;
+						meta.already_matched=1;
+
+					}else{
+						//save min_stage
+						if(meta.carry_min>tmp_existing_flow_count){
+							meta.carry_min=tmp_existing_flow_count;
+							meta.min_stage=i+1;
+						}
+					}
+				}
+
+			}
+
+			// decide to recirculate or not...
+			if(meta.already_matched==0){
+				// Ideally, we need to recirculate with probability 1/(carry_min+1).
+				// There are three options for probabilistic recircuation.
+				// 1. Perfect probability: use precisely 1/(carry_min+1) probabilty. May not be supported by all hardware.
+				// 2. Better (9/8)-approximation: use a 4-bit floating point to approximate carry_min. Require range match.
+				// 3. Naive 2-approximation: approximate 1/(carry_min+1) to the nearest power of 2. Require only ternary match.
+
+		
+				// these are all one-time actions regardless of resources; they don't need to be put in the for loop
+				/* perfect approximation */
+				/* better approximation */
+				/* naive 2- approximation */
+			}
+
+
+
+		}else{
+			// This packet is a recirculated packet.
+			// Since we use Clone and Recirculate / Clone and Resubmit, we always drop them.
+			mark_to_drop();
+
+			for (int i = 0; i < num_arrays; i++) { 
+				// We replace the flow ID in the flow tables, and increment the counter.
+				if(meta.min_stage==(i+1)){
+					flow_table_ids.write(meta.hashed_address, meta.my_flowID);
+					flow_table_ctrs.write(meta.hashed_address, meta.carry_min+1);
+				}
+			}
+
+		}
+
+
+		// Write result to packet header for demo purpose.
+		// In actual applications, we can use the estimated count for decision making in data plane.
+		hdr.ethernet.dstAddr = 0xffffffffffff;
+		hdr.ethernet.srcAddr = meta.my_estimated_count[47:0];
+	}
+
+// =========== End implementation of PRECISION ===========
+
+
