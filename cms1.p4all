@@ -59,7 +59,7 @@ action count(int i) {
 
         /* increment counter  - read, increment, write*/
 	cms_meta1[i].count = counters[cms_meta1[i].index];
-	counters[cms_meta1[i].index] = cms_meta1[i].count + 1;
+	counters[i][cms_meta1[i].index] = cms_meta1[i].count + 1;
 }
 
 action do_find_min(int i){
