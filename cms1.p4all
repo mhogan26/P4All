@@ -58,7 +58,7 @@ action count(int i) {
 	modify_field_with_hash_based_offset(cms_meta1[i].index, 0, stage_hash, 11);
 
         /* increment counter  - read, increment, write*/
-	cms_meta1[i].count = counters[cms_meta1[i].index];
+	cms_meta1[i].count = counters[i][cms_meta1[i].index];
 	counters[i][cms_meta1[i].index] = cms_meta1[i].count + 1;
 }
 
