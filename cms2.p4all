@@ -1,0 +1,84 @@
+/* With this implementation, it DOES metter if we have multiple arrays in the same stage. If they're in the same stage, they'd both be accessing the global metadata at the same time because we compare values to global min as we go. */
+
+/* ethernet, ipv4 headers, parsing, routing functions */
+ 
+/* assume statements should be the minimum value we are willing to accept
+   i.e., minimum width/depth to get some accuracy */
+symbolic int N;
+assume();
+symbolic int depth;
+assume();
+
+// what's the right number of counts to store in metadata? = to the total number of accesses we have across all stages or just the max number of accesses in a single stage?
+/* you can have counts = # accesses across all stages, but with this implementation, that's excessive. we only have 1 access per stage, so we only need 1 count */
+
+header_type cms_meta_global_t {
+    fields {
+        bit<11> index;
+        bit<32> count;
+        bit<32> salt;
+	bit<32> count_min;
+    }
+}
+
+metadata cms_meta_global_t cms_meta_global;
+
+field_list hash_list {
+    ipv4.srcAddr;
+    ipv4.dstAddr;
+    ipv4.protocol;
+    cms_meta_global.salt;
+}
+
+field_list_calculation stage_hash {
+    input {
+        hash_list;
+    }
+    algorithm : crc16;
+    output_width : 11;
+}
+ 
+
+// how many times can you write to the same metadata value in a stage? - still need at least 2 index/counts if more than one access in same stage
+// ^ you can only really do this once, because operations run in parallel in a stage
+
+salts = []	// how to populate this? don't know how many you'll end up needing - could just put max number of values in here? and maybe trim based on how many you actually use?
+register counter {
+	width: 32;
+        instance_count: depth;
+}
+
+counter[N] counters;
+
+action count(int i) {
+	cms_meta_global.salt = salts[i];
+        /* compute hash index */
+	modify_field_with_hash_based_offset(cms_meta_global.index, 0, stage_hash, 11);
+
+        /* increment counter  - read, increment, write*/
+	cms_meta_global.count = counters[i][cms_meta_global.index];
+	counters[i][cms_meta_global.index] = cms_meta_global.count + 1;
+}
+
+action do_find_min(){
+	cms_meta_global.count_min = cms_meta_global.count;
+}
+
+/* for simplicity, we don't include tables and apply actions directly in control */
+control ingress {
+	apply {
+		// we ALWAYS init global min = local count
+		count(0);
+		do_find_min();
+		for (i = 1; i < N; i++) {
+			count(i);
+			if (cms_meta_global.count < cms_meta_global.count_min) {
+				do_find_min();
+			}
+		}
+	}
+
+    	/* apply forwarding logic */
+}
+
+
