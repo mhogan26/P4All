@@ -1,0 +1,89 @@
+/* With this implementation, it won't metter if we have multiple arrays in the same stage. Those can run in parallel because we're not comparing values to find a global min until the end, after we've already done all the hashing. */
+
+/* ethernet, ipv4 headers, parsing, routing functions */
+
+/* assume statements should be the minimum value we are willing to accept
+   i.e., minimum width/depth to get some accuracy */
+symbolic int N;
+assume();
+symbolic int depth;
+assume();
+
+header cms_meta {
+	bit<11> index;
+        bit<32> count;
+        bit<32> salt;
+}
+
+// same syntax as header stack
+cms_meta[N] cms_meta1;
+
+header_type cms_meta_global_t {
+    fields {
+	bit<32> count_min;
+    }
+}
+
+metadata cms_meta_global_t cms_meta_global;
+
+
+// SHOULD THIS BE META1[i]??? -> no, because it's not referring to a specific header
+field_list hash_list {
+    ipv4.srcAddr;
+    ipv4.dstAddr;
+    ipv4.protocol;
+    cms_meta1.salt;
+}
+
+field_list_calculation stage_hash {
+    input {
+        hash_list;
+    }
+    algorithm : crc16;
+    output_width : 11;
+}
+ 
+
+salts = []	// how to populate this? don't know how many you'll end up needing - could just put max number of values in here? and maybe trim based on how many you actually use?
+register counter {
+	width: 32;
+        instance_count: depth;
+}
+
+counter[N] counters;
+
+action count(int i) {
+	cms_meta1[i].salt = salts[i];
+        /* compute hash index */
+	modify_field_with_hash_based_offset(cms_meta1[i].index, 0, stage_hash, 11);
+
+        /* increment counter  - read, increment, write*/
+	cms_meta1[i].count = counters[cms_meta1[i].index];
+	counters[cms_meta1[i].index] = cms_meta1[i].count + 1;
+}
+
+action do_find_min(int i){
+	cms_meta_global.count_min = cms_meta1[i].count;
+}
+
+/* for simplicity, we don't include tables and apply actions directly in control */
+control ingress {
+	apply {
+		for (i = 0; i < N; i++) {
+			count(i);
+		}
+
+    		// finding min - conditions
+    		// first stage is always the same - put 1st count as min
+    		do_find_min(0);
+    		for (i = 1; i < N; i++) {
+			if (cms_meta_global.count_min < cms_meta1[i].count) {
+	    			do_find_min(i);
+			}
+    		}
+	}
+
+    	/* apply forwarding logic */
+}
+
+
