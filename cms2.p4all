@@ -1,4 +1,4 @@
-/* With this implementation, it DOES metter if we have multiple arrays in the same stage. If they're in the same stage, they'd both be accessing the global metadata at the same time because we compare values to global min as we go. */
+/* With this implementation, it DOES matter if we have multiple arrays in the same stage. If they're in the same stage, they'd both be accessing the global metadata at the same time because we compare values to global min as we go. */
 
 /* ethernet, ipv4 headers, parsing, routing functions */
  
@@ -12,22 +12,22 @@ assume();
 // what's the right number of counts to store in metadata? = to the total number of accesses we have across all stages or just the max number of accesses in a single stage?
 /* you can have counts = # accesses across all stages, but with this implementation, that's excessive. we only have 1 access per stage, so we only need 1 count */
 
-header_type cms_meta_global_t {
+header_type cms_meta_t {
     fields {
         bit<11> index;
-        bit<32> count;
+        bit<32> current_count;
         bit<32> salt;
 	bit<32> count_min;
     }
 }
 
-metadata cms_meta_global_t cms_meta_global;
+metadata cms_meta_t cms_meta;
 
 field_list hash_list {
     ipv4.srcAddr;
     ipv4.dstAddr;
     ipv4.protocol;
-    cms_meta_global.salt;
+    cms_meta.salt;
 }
 
 field_list_calculation stage_hash {
@@ -51,17 +51,17 @@ register counter {
 counter[N] counters;
 
 action count(int i) {
-	cms_meta_global.salt = salts[i];
+	cms_meta.salt = salts[i];
         /* compute hash index */
-	modify_field_with_hash_based_offset(cms_meta_global.index, 0, stage_hash, 11);
+	modify_field_with_hash_based_offset(cms_meta.index, 0, stage_hash, 11);
 
         /* increment counter  - read, increment, write*/
-	cms_meta_global.count = counters[i][cms_meta_global.index];
-	counters[i][cms_meta_global.index] = cms_meta_global.count + 1;
+	cms_meta.current_count = counters[i][cms_meta.index];
+	counters[i][cms_meta.index] = cms_meta.current_count + 1;
 }
 
-action do_find_min(){
-	cms_meta_global.count_min = cms_meta_global.count;
+action set_min(){
+	cms_meta.count_min = cms_meta.current_count;
 }
 
 /* for simplicity, we don't include tables and apply actions directly in control */
@@ -69,11 +69,11 @@ control ingress {
 	apply {
 		// we ALWAYS init global min = local count
 		count(0);
-		do_find_min();
+		set_min();
 		for (i = 1; i < N; i++) {
 			count(i);
-			if (cms_meta_global.count < cms_meta_global.count_min) {
-				do_find_min();
+			if (cms_meta.current_count < cms_meta.count_min) {
+				set_min();
 			}
 		}
 	}

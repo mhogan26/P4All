@@ -1,4 +1,4 @@
-/* With this implementation, it won't metter if we have multiple arrays in the same stage. Those can run in parallel because we're not comparing values to find a global min until the end, after we've already done all the hashing. */
+/* With this implementation, it won't matter if we have multiple arrays in the same stage. Those can run in parallel because we're not comparing values to find a global min until the end, after we've already done all the hashing. */
 
 /* ethernet, ipv4 headers, parsing, routing functions */
 
@@ -11,7 +11,7 @@ assume();
 
 header cms_meta {
 	bit<11> index;
-        bit<32> count;
+        bit<32> current_count;
         bit<32> salt;
 }
 
@@ -58,12 +58,12 @@ action count(int i) {
 	modify_field_with_hash_based_offset(cms_meta1[i].index, 0, stage_hash, 11);
 
         /* increment counter  - read, increment, write*/
-	cms_meta1[i].count = counters[i][cms_meta1[i].index];
-	counters[i][cms_meta1[i].index] = cms_meta1[i].count + 1;
+	cms_meta1[i].current_count = counters[cms_meta1[i].index];
+	counters[cms_meta1[i].index] = cms_meta1[i].current_count + 1;
 }
 
-action do_find_min(int i){
-	cms_meta_global.count_min = cms_meta1[i].count;
+action set_min(int i){
+	cms_meta_global.count_min = cms_meta1[i].current_count;
 }
 
 /* for simplicity, we don't include tables and apply actions directly in control */
@@ -75,10 +75,10 @@ control ingress {
 
     		// finding min - conditions
     		// first stage is always the same - put 1st count as min
-    		do_find_min(0);
+    		set_min(0);
     		for (i = 1; i < N; i++) {
-			if (cms_meta_global.count_min < cms_meta1[i].count) {
-	    			do_find_min(i);
+			if (cms_meta1[i].current_count < cms_meta_global.count_min) {
+	    			set_min(i);
 			}
     		}
 	}
