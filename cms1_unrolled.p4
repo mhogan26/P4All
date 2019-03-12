@@ -32,10 +32,8 @@ struct custom_metadata_t {
 	bit<32> count_min;
 	bit<32> index0;
         bit<32> current_count0;
-        bit<32> salt0;
         bit<32> index1;
         bit<32> current_count1;
-        bit<32> salt1;
 }
 
 struct headers {
