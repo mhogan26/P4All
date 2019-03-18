@@ -1,0 +1,77 @@
+/* ethernet, ipv4 headers, parsing, routing actions */
+
+symbolic int N;  
+assume();
+symbolic int size;
+assume();
+
+typedef bit<32> ip4Addr_t;
+
+header ipv4_t {
+    bit<4>    version;
+    bit<4>    ihl;
+    bit<8>    diffserv;
+    bit<16>   totalLen;
+    bit<16>   identification;
+    bit<3>    flags;
+    bit<13>   fragOffset;
+    bit<8>    ttl;
+    bit<8>    protocol;
+    bit<16>   hdrChecksum;
+    ip4Addr_t srcAddr;
+    ip4Addr_t dstAddr;
+}
+
+struct headers {
+    ipv4_t       ipv4;
+}
+
+struct bloom_meta {
+        bit<32> index;
+        bit<1> count;
+}
+
+struct custom_metadata_t {
+	bloom_meta[N] counts;
+}
+
+
+
+field_list hash_list {
+    ipv4.srcAddr;
+    ipv4.dstAddr;
+    ipv4.protocol;
+    bloom_meta.salt;
+}
+
+
+control MyIngress(inout headers hdr,
+                  inout custom_metadata_t meta,
+                  inout standard_metadata_t standard_metadata) {
+
+        register<bit<1>>(size) bloom;
+
+        bit<1> tmp_count;
+	
+	salts = []
+
+	action hash(int i) {
+                hash(meta.counts[i].index, HashAlgorithm.crc16, HASH_BASE,
+                      {hdr.ipv4.srcAddr, hdr.ipv4.dstAddr, hdr.ipv4.protocol, salts[i]}, HASH_MAX);
+
+                bloom.read(meta.counts[i].count, meta.counts[i].index);
+                tmp_count = (meta.counts[i].count == 0)? 1 : meta.counts[i].count;
+
+                bloom.write(meta.counts[i].index,tmp_count);	
+	}
+        apply {
+                if(hdr.ipv4.isValid()) {
+                        for (i=0; i < N; i++) {
+				hash(i);
+			}
+                }
+        }
+	
+}
+
+
