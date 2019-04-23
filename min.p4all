@@ -1,63 +1,116 @@
 /* ethernet, ipv4 headers, parsing, routing actions */
 
+/* total number of values we compare = num_accesses * num_arrays */
+/* this implementation has one array per stage (for simplicity). 
+we need to know the max # of accesses we have in a single stage, because that tells us the # of
+metadata fields we need. it's because we compare values as we go - before we write a value to
+metadata, we check if it's smaller than current metadata value. so the values we compare at the end
+are not all the values we've seen, they're the min of the values we've seen. this comparison as
+we go creates a dependency, so the values we compare have to be in different stages.
+e.g., each stage we check 4 values. we read 4 values, check them against the current 4 vals, and
+move to the next stage.
+we can allow multiple register arrays per stage, but then the symbolic int num_accesses represents
+the # accesses in a stage, not per array. (if we make it per array, then we'd still have to
+define the # metadata in terms of accesses per stage for comparisons)
+this raises a question though: suppose we originally say we want 2 accesses per stage, 1 register
+array per stage, and suppose this doesn't compile bc we use too many stages (maybe unlikely, but
+possible?). what can we do to indicate that we could put 2 arrays in the same stage, and increase
+the # of metadata from 2 to 4??
+ALSO - the num_accesses does NOT have to be the same for each stage/array, so we make it an array
+of symbolic ints that can all be different - but we need to know the max
+we also have the constraint that valuse in the same register are read concurrently.
+*/
 
-// define registers??? -> don't know how many registers we have until know # stages
 
-
-symbolic int stages;
+symbolic int num_arrays;
 assume();
-symbolic int acccesses_stages; // maybe this needs to be a list of values whose length = # stages (not necessarily the same number for each stage) 
+symbolic int num_accesses;
+assume();
+num_accesses[num_arrays] num_accesses_for_arrays;
+assume();
+symbolic int depth;
 assume();
 
-// want to compare N values
-// each stage doesn't need the same number of accesses - so how do we allocate them? we can't just allocate accesses/stage, we have to allocate accesses for each stage
-// this issue also comes up in cms
-symbolic int N
-assume()
+
+#include <core.p4>
+#include <v1model.p4>
+
+typedef bit<32> ip4Addr_t;
 
 
-// metadata??? - how many values in metadata??
-// init metadata values???
-
-/* first half - comparing values */
-// how to add this to tables??? how many tables??? -> does each action get its own table??
-for (i = 0; i < N; i++){
-    action read_compare() {
-	/* read value into memory */
-	METADATA = REGISTER[INDEX];
-	/* compare */
-	META_MIN = (META_MIN < METADATA)? META_MIN : METADATA;
-    }
+header ipv4_t {
+    bit<4>    version;
+    bit<4>    ihl;
+    bit<8>    diffserv;
+    bit<16>   totalLen;
+    bit<16>   identification;
+    bit<3>    flags;
+    bit<13>   fragOffset;
+    bit<8>    ttl;
+    bit<8>    protocol;
+    bit<16>   hdrChecksum;
+    ip4Addr_t srcAddr;
+    ip4Addr_t dstAddr;
 }
 
 
-symbolic int v = max(accesses_stages);
+struct min_meta {
+        bit<32> current_count;
+}
+
+struct custom_metadata_t {
+        bit<32> count_min;
+        // same syntax as header stack
+        min_meta[max(num_accesses_for_arrays)] min_meta;
+}
+
+struct headers {
+    ipv4_t       ipv4;
+}
 
 
-/* second half - find min from remaining values */
-// what is a bundle for this half? is it a single comparison? or is it a single stage of comparisons?
-// this doesn't require register accesses so maybe it doesn't have to be a single comparison??
-
-for (i = 0; i < log(v); i++) {
-    /* compare pairs of values */ - for loop???
-    action do_compare() {
-	for (j = 0; j < log(v)/2; j++) {
+#define HASH_BASE 10w0
+#define HASH_MAX 10w1023
 
 
+/* for simplicity, we don't include tables and apply actions directly in control */
+control MyIngress(inout headers hdr,
+                  inout custom_metadata_t meta,
+                  inout standard_metadata_t standard_metadata) {
+
+        register<bit<32>>(depth) array;
+        array[num_arrays] arrays;
+
+	bit<32> tmp_count;
+
+        action read_value()[int i, int j] {
+		bit<32> index;
+                /* increment counter  - read, increment, write*/
+                counters[i].read(tmp_count, index);
+		meta.min_meta[j].current_count = (tmp_count < meta.min_meta[i].current_count) ? tmp_count : meta.min_meta[i].current_count;
+
+        }
+
+
+        action set_min()[int i]{
+                meta.count_min = meta.min_meta[i].current_count;
+        }
+
+        apply {
+                for (int i = 0; i < num_arrays; i++) {
+			for (int j = 0; j < num_accesses_for_arrays[i]; j++) {
+				read_value()[i,j];
+			}
+		}
+
+		set_min()[0];
+		for (i = 1; i < num_accesses; i++) {
+                        if (meta.min_meta[i].current_count < meta.count_min) {
+                                set_min()[i];
+                        }
+		}
 	}
-    }
-    table compare {
-	actions { do_compare;}
-    }
+	
+	/* apply forwarding logic */
 }
 
-
-
-control ingress {
-    // apply first half
-
-    // apply second half tables
-    apply_tables(compare, log(v));
-
-    /* apply forwarding logic */
-}
