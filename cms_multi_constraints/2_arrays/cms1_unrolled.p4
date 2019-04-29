@@ -2,9 +2,6 @@
 
 /* ethernet, ipv4 headers, parsing, routing functions */
 
-/* assume statements should be the minimum value we are willing to accept
-   i.e., minimum width/depth to get some accuracy */
-
 // N = 2
 // DEPTH = 2048
 
@@ -41,6 +38,23 @@ struct headers {
 }
 
 
+parser MyParser(packet_in packet, out headers hdr, inout custom_metadata_t meta, inout standard_metadata_t standard_metadata) {
+        state start {
+                transition parse_ipv4;
+        }
+        state parse_ipv4 {
+                packet.extract(hdr.ipv4);
+                transition accept;
+        }
+}
+
+control MyVerifyChecksum(inout headers hdr, inout custom_metadata_t meta) {
+        apply { }
+}
+
+
+
+
 #define HASH_BASE 10w0
 #define HASH_MAX 10w1023
 
@@ -67,6 +81,10 @@ control MyIngress(inout headers hdr,
         	counter0.write(meta.index0, meta.current_count0);
 	}
 
+	table count_0 {
+		actions = { count0; }
+	}
+
 	action count1() {
         	/* compute hash index */
                 hash(meta.index1, HashAlgorithm.crc16, HASH_BASE,
@@ -78,26 +96,36 @@ control MyIngress(inout headers hdr,
         	counter1.write(meta.index1, meta.current_count1);
 	}
 
+	table count_1 {
+		actions = { count1; }
+	}
 
 	action set_min0(){
         	meta.count_min = meta.current_count0;
+	}
+
+	table set_min_0 {
+		actions = { set_min0; }
 	}
 
 	action set_min1(){
         	meta.count_min = meta.current_count1;
 	}
 
+	table set_min_1 {
+		actions = { set_min1; }
+	}
 
 
 	apply {
-		count0();
-		count1();
+		count_0.apply();
+		count_1.apply();
 
     		// finding min - conditions
     		// first stage is always the same - put 1st count as min
-    		set_min0();
+    		set_min_0.apply();
 		if (meta.current_count1 < meta.count_min) {
-	    		set_min1();
+	    		set_min_1.apply();
 		}
     		
 	}
@@ -105,4 +133,27 @@ control MyIngress(inout headers hdr,
     	/* apply forwarding logic */
 }
 
+control MyEgress(inout headers hdr, inout custom_metadata_t meta, inout standard_metadata_t standard_metadata) {
+        apply { }
+}
 
+control MyComputeChecksum(inout headers hdr, inout custom_metadata_t meta) {
+        apply { }
+}
+
+control MyDeparser(packet_out packet, in headers hdr) {
+        apply {
+                packet.emit(hdr.ipv4);
+        }
+}
+
+
+
+V1Switch(
+MyParser(),
+MyVerifyChecksum(),
+MyIngress(),
+MyEgress(),
+MyComputeChecksum(),
+MyDeparser()
+) main;
