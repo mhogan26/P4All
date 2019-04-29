@@ -80,6 +80,10 @@ control MyIngress(inout headers hdr,
                 counter0.write(meta.index, meta.current_count);
         }
 
+	table count_0 {
+		actions = { count0; }
+	}
+
 	action count1() {
         	/* compute hash index */
                 hash(meta.index, HashAlgorithm.crc16, HASH_BASE,
@@ -91,17 +95,30 @@ control MyIngress(inout headers hdr,
                 counter1.write(meta.index, meta.current_count);
 	}
 
+	table count_1 {
+		actions = { count1; }
+	}
+
 	action set_min(){
 		meta.count_min = meta.current_count;
 	}
 
+	table set_min_0 {
+		actions = { set_min; }
+	}
+
+	table set_min_1 {
+		actions = { set_min; }
+	}
+
+
 	apply {
 		// we ALWAYS init global min = local count
-		count0();
-		set_min();
-		count1();
+		count_0.apply();
+		set_min_0.apply();
+		count_1.apply();
 		if (meta.current_count < meta.count_min) {
-			set_min();
+			set_min_1.apply();
 		}
 	}
 
