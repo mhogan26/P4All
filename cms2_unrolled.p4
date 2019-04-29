@@ -42,6 +42,19 @@ struct headers {
 // how many times can you write to the same metadata value in a stage? - still need at least 2 index/counts if more than one access in same stage
 // ^ you can only really do this once, because operations run in parallel in a stage
 
+parser MyParser(packet_in packet, out headers hdr, inout custom_metadata_t meta, inout standard_metadata_t standard_metadata) {
+	state start {
+		transition parse_ipv4;
+	}
+	state parse_ipv4 {
+		packet.extract(hdr.ipv4);
+		transition accept;
+	}
+}
+
+control MyVerifyChecksum(inout headers hdr, inout custom_metadata_t meta) {
+	apply { }
+}
 
 #define HASH_BASE 10w0
 #define HASH_MAX 10w1023
@@ -96,3 +109,25 @@ control MyIngress(inout headers hdr,
 }
 
 
+control MyEgress(inout headers hdr, inout custom_metadata_t meta, inout standard_metadata_t standard_metadata) {
+	apply { }
+}
+
+control MyComputeChecksum(inout headers hdr, inout custom_metadata_t meta) {
+	apply { }
+}
+
+control MyDeparser(packet_out packet, in headers hdr) {
+	apply {
+		packet.emit(hdr.ipv4);
+	}
+}
+
+V1Switch(
+MyParser(),
+MyVerifyChecksum(),
+MyIngress(),
+MyEgress(),
+MyComputeChecksum(),
+MyDeparser()
+) main;
