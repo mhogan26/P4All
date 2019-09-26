@@ -3,6 +3,8 @@
 
 //typedef bit<32> ip4Addr_t;
 
+#define NUM_CACHE 128
+
 header_type ipv4_t {
     fields {
 	version: 4;
@@ -131,7 +133,7 @@ header_type  nc_value_8_t {
 header nc_value_8_t nc_value_8;
 
 
-header custom_metadata_t {
+header_type custom_metadata_t {
     fields {
         cache_exist: 1;
         cache_index: 14;
@@ -1415,3 +1417,4 @@ FINAL_PARSER(9)
 
 
 */
+
