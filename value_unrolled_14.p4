@@ -5,6 +5,12 @@
 
 #define NUM_CACHE 128
 
+#define NC_READ_REQUEST     0
+#define NC_READ_REPLY       1
+
+#define NC_UPDATE_REQUEST   8
+#define NC_UPDATE_REPLY     9
+
 header_type ipv4_t {
     fields {
 	version: 4;
@@ -163,7 +169,7 @@ parser parse_udp {
 parser parse_nc_hdr {
 	extract (nc_hdr);
 	return select (latest.op) {
-		NC_READ_REQUST: ingress;
+		NC_READ_REQUEST: ingress;
 		NC_READ_REPLY: parse_value;
 		NC_UPDATE_REQUEST: ingress;
 		NC_UPDATE_REPLY: parse_value;
@@ -1117,7 +1123,7 @@ table remove_value_header_8 {
 }
 
      
-control process_value {
+control ingress {
     if (nc_hdr.op == NC_READ_REQUEST and meta.cache_valid == 1) {
         apply (reply_read_hit_before);
     }
@@ -1129,7 +1135,7 @@ control process_value {
         apply (read_value_1_3);
         apply (read_value_1_4);
     }
-    else if (nc_hdr.op == NC_UPDATE_REPLY and nc_cache_md.cache_exist == 1) {
+    if (nc_hdr.op == NC_UPDATE_REPLY and meta.cache_exist == 1) {
 	apply (write_value_1_1);
         apply (write_value_1_2);
         apply (write_value_1_3);
@@ -1144,7 +1150,7 @@ control process_value {
         apply (read_value_2_3);
         apply (read_value_2_4);
     }
-    else if (nc_hdr.op == NC_UPDATE_REPLY and nc_cache_md.cache_exist == 1) {
+    if (nc_hdr.op == NC_UPDATE_REPLY and meta.cache_exist == 1) {
         apply (write_value_2_1);
         apply (write_value_2_2);
         apply (write_value_2_3);
@@ -1159,7 +1165,7 @@ control process_value {
         apply (read_value_3_3);
         apply (read_value_3_4);
     }
-    else if (nc_hdr.op == NC_UPDATE_REPLY and nc_cache_md.cache_exist == 1) {
+    if (nc_hdr.op == NC_UPDATE_REPLY and meta.cache_exist == 1) {
         apply (write_value_3_1);
         apply (write_value_3_2);
         apply (write_value_3_3);
@@ -1168,13 +1174,13 @@ control process_value {
     }
 
     if (nc_hdr.op == NC_READ_REQUEST and meta.cache_valid == 1) {
-        apply (add_value_header_1);
+        apply (add_value_header_4);
         apply (read_value_4_1);
         apply (read_value_4_2);
         apply (read_value_4_3);
         apply (read_value_4_4);
     }
-    else if (nc_hdr.op == NC_UPDATE_REPLY and nc_cache_md.cache_exist == 1) {
+    if (nc_hdr.op == NC_UPDATE_REPLY and meta.cache_exist == 1) {
         apply (write_value_4_1);
         apply (write_value_4_2);
         apply (write_value_4_3);
@@ -1189,7 +1195,7 @@ control process_value {
         apply (read_value_5_3);
         apply (read_value_5_4);
     }
-    else if (nc_hdr.op == NC_UPDATE_REPLY and nc_cache_md.cache_exist == 1) {
+    if (nc_hdr.op == NC_UPDATE_REPLY and meta.cache_exist == 1) {
         apply (write_value_5_1);
         apply (write_value_5_2);
         apply (write_value_5_3);
@@ -1204,7 +1210,7 @@ control process_value {
         apply (read_value_6_3);
         apply (read_value_6_4);
     }
-    else if (nc_hdr.op == NC_UPDATE_REPLY and nc_cache_md.cache_exist == 1) {
+    if (nc_hdr.op == NC_UPDATE_REPLY and meta.cache_exist == 1) {
         apply (write_value_6_1);
         apply (write_value_6_2);
         apply (write_value_6_3);
@@ -1219,7 +1225,7 @@ control process_value {
         apply (read_value_7_3);
         apply (read_value_7_4);
     }
-    else if (nc_hdr.op == NC_UPDATE_REPLY and nc_cache_md.cache_exist == 1) {
+    if (nc_hdr.op == NC_UPDATE_REPLY and meta.cache_exist == 1) {
         apply (write_value_7_1);
         apply (write_value_7_2);
         apply (write_value_7_3);
@@ -1234,7 +1240,7 @@ control process_value {
         apply (read_value_8_3);
         apply (read_value_8_4);
     }
-    else if (nc_hdr.op == NC_UPDATE_REPLY and nc_cache_md.cache_exist == 1) {
+    if (nc_hdr.op == NC_UPDATE_REPLY and meta.cache_exist == 1) {
         apply (write_value_8_1);
         apply (write_value_8_2);
         apply (write_value_8_3);
@@ -1244,6 +1250,7 @@ control process_value {
 
     if (nc_hdr.op == NC_READ_REQUEST and meta.cache_valid == 1) {
         apply (reply_read_hit_after);
+    }
 }
 
 
