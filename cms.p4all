@@ -1,0 +1,47 @@
+symbolic int rows;
+symbolic int columns;
+
+struct cms_meta {
+	bit<32> index;
+        bit<32> current_count;
+}
+
+struct custom_metadata_t {
+	bit<32> count_min;
+	cms_meta[rows] cms_meta_hdrs;
+}
+
+control ingress(inout headers hdr,
+                  inout custom_metadata_t meta,
+                  inout standard_metadata_t standard_metadata) {
+
+	register<bit<32>>(columns) counter;
+	counter[rows] counters;
+
+	action hash_increment()[int i] {
+        	/* compute hash index */
+        	/* increment counter stored in counters[i] */
+		/* write to cms_meta_hdrs[i] */
+	}
+
+	action set_min()[int i]{
+        	meta.count_min = meta.cms_meta_hdrs[i].current_count;
+	}
+
+	apply {
+		for (i < rows) {
+			hash_increment()[i]
+		}
+		
+		for (i < rows) {
+			if (meta.cms_meta_hdrs[i].current_count < meta.count_min) {
+				set_min()[i]
+			}
+		}
+
+	}
+
+}
+
+
+
