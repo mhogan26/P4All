@@ -138,33 +138,31 @@ control MyIngress(inout headers hdr,
 
 // this is all defined in the egress pipeline
 
-symbolic int FLOW_TABLE_SIZE_EACH;
-
 control MyEgress(inout headers hdr,
                  inout custom_metadata_t meta,
                                  inout standard_metadata_t standard_metadata) {
 
-	register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_id_1;
-        register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_id_2;
-        register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_id_3;
-        register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_id_4;
-        register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_id_5;
-        register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_id_6;
-        register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_id_7;
-        register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_id_8;
-        register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_id_9;
-        register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_id_10;
+	register<bit<64>>(1024) flow_table_id_1;
+        register<bit<64>>(1024) flow_table_id_2;
+        register<bit<64>>(1024) flow_table_id_3;
+        register<bit<64>>(1024) flow_table_id_4;
+        register<bit<64>>(1024) flow_table_id_5;
+        register<bit<64>>(1024) flow_table_id_6;
+        register<bit<64>>(1024) flow_table_id_7;
+        register<bit<64>>(1024) flow_table_id_8;
+        register<bit<64>>(1024) flow_table_id_9;
+        register<bit<64>>(1024) flow_table_id_10;
 
-	register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_ctr_1;
-        register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_ctr_2;
-        register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_ctr_3;
-        register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_ctr_4;
-        register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_ctr_5;
-        register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_ctr_6;
-        register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_ctr_7;
-        register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_ctr_8;
-        register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_ctr_9;
-        register<bit<64>>(FLOW_TABLE_SIZE_EACH) flow_table_ctr_10;
+	register<bit<64>>(1024) flow_table_ctr_1;
+        register<bit<64>>(1024) flow_table_ctr_2;
+        register<bit<64>>(1024) flow_table_ctr_3;
+        register<bit<64>>(1024) flow_table_ctr_4;
+        register<bit<64>>(1024) flow_table_ctr_5;
+        register<bit<64>>(1024) flow_table_ctr_6;
+        register<bit<64>>(1024) flow_table_ctr_7;
+        register<bit<64>>(1024) flow_table_ctr_8;
+        register<bit<64>>(1024) flow_table_ctr_9;
+        register<bit<64>>(1024) flow_table_ctr_10;
 
         action commpute_flow_id () {
                 meta.my_flowID[31:0]=hdr.ipv4.srcAddr;
