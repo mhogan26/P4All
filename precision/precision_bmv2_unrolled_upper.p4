@@ -171,9 +171,6 @@ control MyEgress(inout headers hdr,
 
 
 
-	// how to handle added hash values? - just use array of vals? and drop vals not used?
-	hash_vals = [0, 7w11, 3w5, 5w3, 2w0, 1w1, 11w7, 3w7, 7w3]	// 0 means no val/skip - can actually put 0 in code?
-	
 	action compute_reg_index_1() {
 		hash(meta.hashed_address_s1, HashAlgorithm.crc16, HASH_BASE,
 				{hdr.ipv4.srcAddr, 7w11, hdr.ipv4.dstAddr}, HASH_MAX);
