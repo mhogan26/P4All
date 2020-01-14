@@ -6,11 +6,7 @@
 //#include <core.p4>
 //#include <v1model.p4>
 
-const bit<16> TYPE_IPV4 = 0x800;
-
 // Headers and Metadata definitions
-
-typedef bit<9>  egressSpec_t;
 
 header_type ethernet_t {
     fields {
@@ -81,7 +77,7 @@ parser start {
 parser parse_ethernet {
 	extract(ethernet);
 	return select(latest.etherType) {
-		TYPE_IPV4: parse_ipv4;
+		0x800: parse_ipv4;
 		default: ingress;
 	}
 }
@@ -803,22 +799,17 @@ action clone_and_recirc_replace_entry(){
 }
 
 table better_approximation {
-	// Goal: recirculate using probability 1/(2^x*T) nearest to 1/(carry_min+1), x between [1..63], T between [8..15]
+	reads {
+		meta.carry_min_plus_one : ternary;
+		meta.random_bits : ternary;
+		meta.random_bits_short : range;
+	}
         actions {
-        	no_op();
-                clone_and_recirc_replace_entry();
+                clone_and_recirc_replace_entry;
+		no_op;
         }
-        key {
-            meta.carry_min_plus_one: ternary;
-                        meta.random_bits: ternary;
-                        meta.random_bits_short: range;
-        }
-        size = 128;
-                default_action = no_op();
-                const entries = {
-#include "entries_better.p4"
-                }
-        }
+        size : 128;
+}
 
 
 action rands_a() {
@@ -859,6 +850,11 @@ table src_mod {
 	}
 }
 
+control read_1 {
+	apply(read_id_1);
+	apply(read_c_1);
+}
+
 control egress {
 	apply(compute_flow_id);
 	apply(compute_reg_index_1);
@@ -874,190 +870,189 @@ control egress {
 
 	apply(set_est_count);
 
-	if(standard_metadata.instance_type==0){
-		apply(read_id_1);
-		apply(read_c_1);
-		if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID){
+	if(standard_metadata.instance_type==0)
+		read_1();
+		if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
 			apply(write_id_1);
 			apply(add_count);
 			apply(write_c_1);
 
 			apply(mod_count);
 			apply(mod_match);
-		}else {
+		else 
 			apply(mod_min);
 			apply(mod_stg_1);
-		}
-		if(meta.already_matched==0){
+		
+		if(meta.already_matched==0)
 			apply(read_id_2);
 			apply(read_c_2);
-			if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID){
+			if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
 				apply(write_id_2);
 				apply(add_count);
 				apply(write_c_2);
 
 				apply(mod_count);
 				apply(mod_match);
-			}else{
-				if(meta.carry_min>meta.tmp_existing_flow_count){
+			else
+				if(meta.carry_min>meta.tmp_existing_flow_count)
 					apply(mod_min);
 					apply(mod_stg_2);
-				}
-			}
-		}
-                if(meta.already_matched==0){
+				
+			
+		
+                if(meta.already_matched==0)
                         apply(read_id_3);
                         apply(read_c_3);
-                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID){
+                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
                                 apply(write_id_3);
                                 apply(add_count);
                                 apply(write_c_3);
 
                                 apply(mod_count);
                                 apply(mod_match);
-                        }else{
-                                if(meta.carry_min>meta.tmp_existing_flow_count){
+                        else
+                                if(meta.carry_min>meta.tmp_existing_flow_count)
                                         apply(mod_min);
                                         apply(mod_stg_3);
-                                }
-                        }
-                }
-                if(meta.already_matched==0){
+                                
+                        
+                
+                if(meta.already_matched==0)
                         apply(read_id_4);
                         apply(read_c_4);
-                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID){
+                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
                                 apply(write_id_4);
                                 apply(add_count);
                                 apply(write_c_4);
 
                                 apply(mod_count);
                                 apply(mod_match);
-                        }else{
-                                if(meta.carry_min>meta.tmp_existing_flow_count){
+                        else
+                                if(meta.carry_min>meta.tmp_existing_flow_count)
                                         apply(mod_min);
                                         apply(mod_stg_4);
-                                }
-                        }
-                }
-                if(meta.already_matched==0){
+                                
+                        
+                
+                if(meta.already_matched==0)
                         apply(read_id_5);
                         apply(read_c_5);
-                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID){
+                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
                                 apply(write_id_5);
                                 apply(add_count);
                                 apply(write_c_5);
 
                                 apply(mod_count);
                                 apply(mod_match);
-                        }else{
-                                if(meta.carry_min>meta.tmp_existing_flow_count){
+                        else
+                                if(meta.carry_min>meta.tmp_existing_flow_count)
                                         apply(mod_min);
                                         apply(mod_stg_5);
-                                }
-                        }
-                }
-                if(meta.already_matched==0){
+                                
+                        
+                
+                if(meta.already_matched==0)
                         apply(read_id_6);
                         apply(read_c_6);
-                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID){
+                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
                                 apply(write_id_6);
                                 apply(add_count);
                                 apply(write_c_6);
 
                                 apply(mod_count);
                                 apply(mod_match);
-                        }else{
-                                if(meta.carry_min>meta.tmp_existing_flow_count){
+                        else
+                                if(meta.carry_min>meta.tmp_existing_flow_count)
                                         apply(mod_min);
                                         apply(mod_stg_6);
-                                }
-                        }
-                }
-                if(meta.already_matched==0){
+                                
+                        
+                
+                if(meta.already_matched==0)
                         apply(read_id_7);
                         apply(read_c_7);
-                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID){
+                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
                                 apply(write_id_7);
                                 apply(add_count);
                                 apply(write_c_7);
 
                                 apply(mod_count);
                                 apply(mod_match);
-                        }else{
+                        else
                                 if(meta.carry_min>meta.tmp_existing_flow_count){
                                         apply(mod_min);
                                         apply(mod_stg_7);
-                                }
-                        }
-                }
-                if(meta.already_matched==0){
+                                
+                        
+                
+                if(meta.already_matched==0)
                         apply(read_id_8);
                         apply(read_c_8);
-                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID){
+                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
                                 apply(write_id_8);
                                 apply(add_count);
                                 apply(write_c_8);
 
                                 apply(mod_count);
                                 apply(mod_match);
-                        }else{
-                                if(meta.carry_min>meta.tmp_existing_flow_count){
+                        else
+                                if(meta.carry_min>meta.tmp_existing_flow_count)
                                         apply(mod_min);
                                         apply(mod_stg_8);
-                                }
-                        }
-                }
+                                
+                        
+                
 
-		if(meta.already_matched==0){
+		if(meta.already_matched==0)
 			apply(rands);
 			apply(min_plus);
 			apply(better_approximation);
-		}
-	}else{
+		
+	else
 		apply(drop);
-		if(meta.min_stage==1){
+		if(meta.min_stage==1)
 			apply(write_id_1);
 			apply(add_count);
 			apply(write_c_1);
-		}
-		if(meta.min_stage==2){
+		
+		if(meta.min_stage==2)
                         apply(write_id_2);
                         apply(add_count);
                         apply(write_c_2);
-                }
-                if(meta.min_stage==3){
+                
+                if(meta.min_stage==3)
                         apply(write_id_3);
                         apply(add_count);
                         apply(write_c_3);
-                }
-                if(meta.min_stage==4){
+                
+                if(meta.min_stage==4)
                         apply(write_id_4);
                         apply(add_count);
                         apply(write_c_4);
-                }
-                if(meta.min_stage==5){
+                
+                if(meta.min_stage==5)
                         apply(write_id_5);
                         apply(add_count);
                         apply(write_c_5);
-                }
-                if(meta.min_stage==6){
+                
+                if(meta.min_stage==6)
                         apply(write_id_6);
                         apply(add_count);
                         apply(write_c_6);
-                }
-                if(meta.min_stage==7){
+                
+                if(meta.min_stage==7)
                         apply(write_id_7);
                         apply(add_count);
                         apply(write_c_7);
-                }
-                if(meta.min_stage==8){
+                
+                if(meta.min_stage==8)
                         apply(write_id_8);
                         apply(add_count);
                         apply(write_c_8);
-                }
+                
 
 
-	}
+	
 	apply(dst_mod);
 	apply(src_mod);
 
@@ -1065,5 +1060,6 @@ control egress {
 
 
 // =========== End implementation of PRECISION ===========
+
 
 
