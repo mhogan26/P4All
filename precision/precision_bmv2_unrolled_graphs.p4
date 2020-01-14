@@ -854,6 +854,277 @@ control read_1 {
 	apply(read_id_1);
 	apply(read_c_1);
 }
+control read_2 {
+        apply(read_id_2);
+        apply(read_c_2);
+}
+control read_3 {
+        apply(read_id_3);
+        apply(read_c_3);
+}
+control read_4 {
+        apply(read_id_4);
+        apply(read_c_4);
+}
+control read_5 {
+        apply(read_id_5);
+        apply(read_c_5);
+}
+control read_6 {
+        apply(read_id_6);
+        apply(read_c_6);
+}
+control read_7 {
+        apply(read_id_7);
+        apply(read_c_7);
+}
+control read_8 {
+        apply(read_id_8);
+        apply(read_c_8);
+}
+
+
+control write_1_mod {
+	apply(write_id_1);
+	apply(add_count);
+	apply(write_c_1);
+	apply(mod_count);
+	apply(mod_match);
+}
+control write_2_mod {
+        apply(write_id_2);
+        apply(add_count);
+        apply(write_c_2);
+        apply(mod_count);
+        apply(mod_match);
+}
+control write_3_mod {
+        apply(write_id_3);
+        apply(add_count);
+        apply(write_c_3);
+        apply(mod_count);
+        apply(mod_match);
+}
+control write_4_mod {
+        apply(write_id_4);
+        apply(add_count);
+        apply(write_c_4);
+        apply(mod_count);
+        apply(mod_match);
+}
+control write_5_mod {
+        apply(write_id_5);
+        apply(add_count);
+        apply(write_c_5);
+        apply(mod_count);
+        apply(mod_match);
+}
+control write_6_mod {
+        apply(write_id_6);
+        apply(add_count);
+        apply(write_c_6);
+        apply(mod_count);
+        apply(mod_match);
+}
+control write_7_mod {
+        apply(write_id_7);
+        apply(add_count);
+        apply(write_c_7);
+        apply(mod_count);
+        apply(mod_match);
+}
+control write_8_mod {
+        apply(write_id_8);
+        apply(add_count);
+        apply(write_c_8);
+        apply(mod_count);
+        apply(mod_match);
+}
+
+
+control mod_s_1 {
+	apply(mod_min);
+	apply(mod_stg_1);
+}
+control mod_s_2 {
+        apply(mod_min);
+        apply(mod_stg_2);
+}
+control mod_s_3 {
+        apply(mod_min);
+        apply(mod_stg_3);
+}
+control mod_s_4 {
+        apply(mod_min);
+        apply(mod_stg_4);
+}
+control mod_s_5 {
+        apply(mod_min);
+        apply(mod_stg_5);
+}
+control mod_s_6 {
+        apply(mod_min);
+        apply(mod_stg_6);
+}
+control mod_s_7 {
+        apply(mod_min);
+        apply(mod_stg_7);
+}
+control mod_s_8 {
+        apply(mod_min);
+        apply(mod_stg_8);
+}
+
+control already_2 {
+	read_2();
+	if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
+		write_2_mod();
+	else if(meta.carry_min>meta.tmp_existing_flow_count)
+		mod_s_2();
+}
+
+control already_3 {
+read_3()
+                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
+                                write_3_mod();
+                        else if(meta.carry_min>meta.tmp_existing_flow_count)
+                                        mod_s_3(); 
+}
+
+control already_4 {
+read_4()
+                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
+                                write_4_mod();
+                        else if(meta.carry_min>meta.tmp_existing_flow_count)
+                                        mod_s_4();
+}
+control already_5 {
+read_5();
+                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
+                                write_5_mod();
+                        else if(meta.carry_min>meta.tmp_existing_flow_count)
+                                        mod_s_5();
+}
+control already_6 {
+read_6();
+                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
+                                write_6_mod();
+                        else if(meta.carry_min>meta.tmp_existing_flow_count)
+                                        mod_s_6();
+}
+control already_7 {
+read_7();
+                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
+                                write_7_mod();
+                        else if(meta.carry_min>meta.tmp_existing_flow_count){
+                                        mod_s_7();
+}
+control already_8 {
+read_8();
+                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
+                                write_8_mod();
+                        else if(meta.carry_min>meta.tmp_existing_flow_count)
+                                        mod_s_8();
+}
+control already_approx {
+apply(rands);
+                        apply(min_plus);
+                        apply(better_approximation);
+}
+
+control type_0 {
+read_1();
+                if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
+                        write_1_mod();
+                else 
+                        mod_s_1();  
+
+                if(meta.already_matched==0)
+                        already_2();
+
+                if(meta.already_matched==0)
+                        already_3();
+ 
+                if(meta.already_matched==0)
+                        already_4();
+ 
+                if(meta.already_matched==0)
+                        already_5();
+
+                if(meta.already_matched==0)
+                        already_6();
+
+                if(meta.already_matched==0)
+                        already_7();
+
+                if(meta.already_matched==0)
+                        already_8();
+
+
+                if(meta.already_matched==0)
+                        already_aprox();
+}
+
+control w_1 {
+apply(write_id_1);
+                        apply(add_count);
+                        apply(write_c_1);
+}
+control w_2 {
+apply(write_id_2);
+                        apply(add_count);
+                        apply(write_c_2);
+}
+control w_3 {
+apply(write_id_3);
+                        apply(add_count);
+                        apply(write_c_3);
+}
+control w_4 {
+apply(write_id_4);
+                        apply(add_count);
+                        apply(write_c_4);
+}
+control w_5 {
+apply(write_id_5);
+                        apply(add_count);
+                        apply(write_c_5);
+}
+control w_6 {
+apply(write_id_6);
+                        apply(add_count);
+                        apply(write_c_6);
+}
+control w_7 {
+apply(write_id_7);
+                        apply(add_count);
+                        apply(write_c_7);
+}
+control w_8 {
+apply(write_id_8);
+                        apply(add_count);
+                        apply(write_c_8);
+}
+
+control not_type_0 {
+apply(drop);
+                if(meta.min_stage==1)
+                        w_1();
+                if(meta.min_stage==2)
+                        w_2();
+                if(meta.min_stage==3)
+                        w_3();
+                if(meta.min_stage==4)
+                        w_4();
+                if(meta.min_stage==5)
+                        w_5();
+                if(meta.min_stage==6)
+                        w_6();
+                if(meta.min_stage==7)
+                        w_7();
+                if(meta.min_stage==8)
+                        w_8();
+}
 
 control egress {
 	apply(compute_flow_id);
@@ -871,186 +1142,9 @@ control egress {
 	apply(set_est_count);
 
 	if(standard_metadata.instance_type==0)
-		read_1();
-		if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
-			apply(write_id_1);
-			apply(add_count);
-			apply(write_c_1);
-
-			apply(mod_count);
-			apply(mod_match);
-		else 
-			apply(mod_min);
-			apply(mod_stg_1);
-		
-		if(meta.already_matched==0)
-			apply(read_id_2);
-			apply(read_c_2);
-			if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
-				apply(write_id_2);
-				apply(add_count);
-				apply(write_c_2);
-
-				apply(mod_count);
-				apply(mod_match);
-			else
-				if(meta.carry_min>meta.tmp_existing_flow_count)
-					apply(mod_min);
-					apply(mod_stg_2);
-				
-			
-		
-                if(meta.already_matched==0)
-                        apply(read_id_3);
-                        apply(read_c_3);
-                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
-                                apply(write_id_3);
-                                apply(add_count);
-                                apply(write_c_3);
-
-                                apply(mod_count);
-                                apply(mod_match);
-                        else
-                                if(meta.carry_min>meta.tmp_existing_flow_count)
-                                        apply(mod_min);
-                                        apply(mod_stg_3);
-                                
-                        
-                
-                if(meta.already_matched==0)
-                        apply(read_id_4);
-                        apply(read_c_4);
-                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
-                                apply(write_id_4);
-                                apply(add_count);
-                                apply(write_c_4);
-
-                                apply(mod_count);
-                                apply(mod_match);
-                        else
-                                if(meta.carry_min>meta.tmp_existing_flow_count)
-                                        apply(mod_min);
-                                        apply(mod_stg_4);
-                                
-                        
-                
-                if(meta.already_matched==0)
-                        apply(read_id_5);
-                        apply(read_c_5);
-                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
-                                apply(write_id_5);
-                                apply(add_count);
-                                apply(write_c_5);
-
-                                apply(mod_count);
-                                apply(mod_match);
-                        else
-                                if(meta.carry_min>meta.tmp_existing_flow_count)
-                                        apply(mod_min);
-                                        apply(mod_stg_5);
-                                
-                        
-                
-                if(meta.already_matched==0)
-                        apply(read_id_6);
-                        apply(read_c_6);
-                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
-                                apply(write_id_6);
-                                apply(add_count);
-                                apply(write_c_6);
-
-                                apply(mod_count);
-                                apply(mod_match);
-                        else
-                                if(meta.carry_min>meta.tmp_existing_flow_count)
-                                        apply(mod_min);
-                                        apply(mod_stg_6);
-                                
-                        
-                
-                if(meta.already_matched==0)
-                        apply(read_id_7);
-                        apply(read_c_7);
-                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
-                                apply(write_id_7);
-                                apply(add_count);
-                                apply(write_c_7);
-
-                                apply(mod_count);
-                                apply(mod_match);
-                        else
-                                if(meta.carry_min>meta.tmp_existing_flow_count){
-                                        apply(mod_min);
-                                        apply(mod_stg_7);
-                                
-                        
-                
-                if(meta.already_matched==0)
-                        apply(read_id_8);
-                        apply(read_c_8);
-                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
-                                apply(write_id_8);
-                                apply(add_count);
-                                apply(write_c_8);
-
-                                apply(mod_count);
-                                apply(mod_match);
-                        else
-                                if(meta.carry_min>meta.tmp_existing_flow_count)
-                                        apply(mod_min);
-                                        apply(mod_stg_8);
-                                
-                        
-                
-
-		if(meta.already_matched==0)
-			apply(rands);
-			apply(min_plus);
-			apply(better_approximation);
-		
+		type_0();
 	else
-		apply(drop);
-		if(meta.min_stage==1)
-			apply(write_id_1);
-			apply(add_count);
-			apply(write_c_1);
-		
-		if(meta.min_stage==2)
-                        apply(write_id_2);
-                        apply(add_count);
-                        apply(write_c_2);
-                
-                if(meta.min_stage==3)
-                        apply(write_id_3);
-                        apply(add_count);
-                        apply(write_c_3);
-                
-                if(meta.min_stage==4)
-                        apply(write_id_4);
-                        apply(add_count);
-                        apply(write_c_4);
-                
-                if(meta.min_stage==5)
-                        apply(write_id_5);
-                        apply(add_count);
-                        apply(write_c_5);
-                
-                if(meta.min_stage==6)
-                        apply(write_id_6);
-                        apply(add_count);
-                        apply(write_c_6);
-                
-                if(meta.min_stage==7)
-                        apply(write_id_7);
-                        apply(add_count);
-                        apply(write_c_7);
-                
-                if(meta.min_stage==8)
-                        apply(write_id_8);
-                        apply(add_count);
-                        apply(write_c_8);
-                
-
+		not_type_0();
 
 	
 	apply(dst_mod);
