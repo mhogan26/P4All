@@ -1,6 +1,6 @@
 /* -*- P4_16 -*- */
-#define HASH_BASE 10w0
-#define HASH_MAX 10w1023
+#define HASH_BASE 10
+#define HASH_MAX 1023
 
 
 //#include <core.p4>
@@ -89,20 +89,12 @@ parser parse_ipv4 {
 
 
 action repeater_a() {
-	subtract(standard_metadata.egress_spec, 9w3, standard_metadata.ingress_port);
+	subtract(standard_metadata.egress_spec, 9, standard_metadata.ingress_port);
 }
 table repeater {
 	actions {
 		repeater_a;
 	}
-}
-action bouncer_a() {
-	modify_field(standard_metadata.egress_spec, standard_metadata.ingress_port);
-}
-table bouncer {
-	actions {
-		bouncer_a;
-	{
 }
 
 action drop_a() {
@@ -115,12 +107,8 @@ table drop {
 }
 
 control ingress {
-	if(valid(ipv4)){
-        // Choose from repeater or bouncer, or add your real IPv4 forwarding?
-        apply(repeater);
-        }else{
-        	apply(drop);
-        }
+	if (valid(ipv4)) apply(repeater);
+	if (not valid(ipv4)) apply(drop);
 }
 
 // =========== Start implementation of PRECISION ============
@@ -167,43 +155,44 @@ register flow_table_id_8 {
         instance_count: 1024;
 }
 
-regsiter flow_table_ctr_1 {
+register flow_table_ctr_1 {
 	width: 64;
 	instance_count: 1024;
 }
 
-regsiter flow_table_ctr_2 {
+register flow_table_ctr_2 {
         width: 64;
         instance_count: 1024;
 }
-regsiter flow_table_ctr_3 {
+register flow_table_ctr_3 {
         width: 64;
         instance_count: 1024;
 }
-regsiter flow_table_ctr_4 {
+register flow_table_ctr_4 {
         width: 64;
         instance_count: 1024;
 }
-regsiter flow_table_ctr_5 {
+register flow_table_ctr_5 {
         width: 64;
         instance_count: 1024;
 }
-regsiter flow_table_ctr_6 {
+register flow_table_ctr_6 {
         width: 64;
         instance_count: 1024;
 }
-regsiter flow_table_ctr_7 {
+register flow_table_ctr_7 {
         width: 64;
         instance_count: 1024;
 }
-regsiter flow_table_ctr_8 {
+register flow_table_ctr_8 {
         width: 64;
         instance_count: 1024;
 }
 
 action compute_flow_id_a() {
-	modify_field(meta.my_flowID[31:0], hdr.ipv4.srcAddr);
-	modify_field(meta.my_flowID[63:32], hdr.ipv4.dstAddr);
+	// should use mask here
+	modify_field(meta.my_flowID, ipv4.srcAddr);
+	modify_field(meta.my_flowID, ipv4.dstAddr);
 }
 
 table compute_flow_id {
@@ -214,7 +203,7 @@ table compute_flow_id {
 
 field_list hash_1 {
         ipv4.srcAddr;
-        7w11;
+        7;
         ipv4.dstAddr;
 }
 field_list_calculation hashcalc_1 {
@@ -233,9 +222,9 @@ table compute_reg_index_1 {
 }
 
 field_list hash_2 {
-	3w5;
+	3;
         ipv4.srcAddr;
-        5w3;
+        5;
         ipv4.dstAddr;
 }
 field_list_calculation hashcalc_2 {
@@ -253,9 +242,9 @@ table compute_reg_index_2 {
 }
 
 field_list hash_3 {
-	2w0;
+	2;
         ipv4.srcAddr;
-        1w1;
+        1;
         ipv4.dstAddr;
 }
 field_list_calculation hashcalc_3 {
@@ -273,9 +262,9 @@ table compute_reg_index_3 {
 }
 
 field_list hash_4 {
-	3w1;
+	3;
         ipv4.srcAddr;
-        7w3;
+        7;
         ipv4.dstAddr;
 }
 field_list_calculation hashcalc_4 {
@@ -294,7 +283,7 @@ table compute_reg_index_4 {
 
 field_list hash_5 {
         ipv4.srcAddr;
-        13w11;
+        13;
         ipv4.dstAddr;
 }
 field_list_calculation hashcalc_5 {
@@ -313,7 +302,7 @@ table compute_reg_index_5 {
 
 field_list hash_6 {
         ipv4.srcAddr;
-        11w13;
+        11;
         ipv4.dstAddr;
 }
 field_list_calculation hashcalc_6 {
@@ -332,7 +321,7 @@ table compute_reg_index_6 {
 
 field_list hash_7 {
         ipv4.srcAddr;
-        7w13;
+        5;
         ipv4.dstAddr;
 }
 field_list_calculation hashcalc_7 {
@@ -351,7 +340,7 @@ table compute_reg_index_7 {
 
 field_list hash_8 {
         ipv4.srcAddr;
-        11w7;
+        3;
         ipv4.dstAddr;
 }
 field_list_calculation hashcalc_8 {
@@ -392,7 +381,7 @@ action read_c_a_1() {
 }
 table read_c_1 {
         actions {
-                read_id_c_1;
+                read_c_a_1;
         }
 }
 
@@ -410,7 +399,7 @@ action read_c_a_2() {
 }
 table read_c_2 {
         actions {
-                read_id_c_2;
+                read_c_a_2;
         }
 }
 
@@ -428,7 +417,7 @@ action read_c_a_3() {
 }
 table read_c_3 {
         actions {
-                read_id_c_3;
+                read_c_a_3;
         }
 }
 
@@ -446,7 +435,7 @@ action read_c_a_4() {
 }
 table read_c_4 {
         actions {
-                read_id_c_4;
+                read_c_a_4;
         }
 }
 
@@ -464,7 +453,7 @@ action read_c_a_5() {
 }
 table read_c_5 {
         actions {
-                read_id_c_5;
+                read_c_a_5;
         }
 }
 
@@ -482,7 +471,7 @@ action read_c_a_6() {
 }
 table read_c_6 {
         actions {
-                read_id_c_6;
+                read_c_a_6;
         }
 }
 
@@ -500,7 +489,7 @@ action read_c_a_7() {
 }
 table read_c_7 {
         actions {
-                read_id_c_7;
+                read_c_a_7;
         }
 }
 
@@ -518,7 +507,7 @@ action read_c_a_8() {
 }
 table read_c_8 {
         actions {
-                read_id_c_8;
+                read_c_a_8;
         }
 }
 
@@ -602,6 +591,42 @@ table add_count {
 		add_count_a;
 	}
 }
+table add_count_2 {
+        actions {
+                add_count_a;
+        }
+}
+table add_count_3 {
+        actions {
+                add_count_a;
+        }
+}
+table add_count_4 {
+        actions {
+                add_count_a;
+        }
+}
+table add_count_5 {
+        actions {
+                add_count_a;
+        }
+}
+table add_count_6 {
+        actions {
+                add_count_a;
+        }
+}
+table add_count_7 {
+        actions {
+                add_count_a;
+        }
+}
+table add_count_8 {
+        actions {
+                add_count_a;
+        }
+}
+
 
 action write_c_a_1() {
 	register_write(flow_table_ctr_1, meta.hashed_address_s1, meta.tmp_existing_flow_count);
@@ -798,6 +823,10 @@ action clone_and_recirc_replace_entry(){
 	clone_egress_pkt_to_egress(0, cln);
 }
 
+action none() {
+	no_op();
+}
+
 table better_approximation {
 	reads {
 		meta.carry_min_plus_one : ternary;
@@ -806,15 +835,15 @@ table better_approximation {
 	}
         actions {
                 clone_and_recirc_replace_entry;
-		no_op;
+		none;
         }
         size : 128;
 }
 
 
 action rands_a() {
-	modify_field_rng_uniform(meta.random_bits, 64w0, 64w0-1);
-	modify_field_rng_uniform(meta.random_bits_short, 12w0, 12w0-1); 
+	modify_field(meta.random_bits, 64);
+	modify_field(meta.random_bits_short, 12); 
 }
 table rands {
 	actions {
@@ -842,7 +871,8 @@ table dst_mod {
 }
 
 action src_mod_a() {
-	modify_field(ethernet.srcAddr, meta.my_estimated_count[47:0]);
+	// should use mask
+	modify_field(ethernet.srcAddr, meta.my_estimated_count);
 }
 table src_mod {
 	actions {
@@ -893,49 +923,49 @@ control write_1_mod {
 }
 control write_2_mod {
         apply(write_id_2);
-        apply(add_count);
+        apply(add_count_2);
         apply(write_c_2);
         apply(mod_count);
         apply(mod_match);
 }
 control write_3_mod {
         apply(write_id_3);
-        apply(add_count);
+        apply(add_count_3);
         apply(write_c_3);
         apply(mod_count);
         apply(mod_match);
 }
 control write_4_mod {
         apply(write_id_4);
-        apply(add_count);
+        apply(add_count_4);
         apply(write_c_4);
         apply(mod_count);
         apply(mod_match);
 }
 control write_5_mod {
         apply(write_id_5);
-        apply(add_count);
+        apply(add_count_5);
         apply(write_c_5);
         apply(mod_count);
         apply(mod_match);
 }
 control write_6_mod {
         apply(write_id_6);
-        apply(add_count);
+        apply(add_count_6);
         apply(write_c_6);
         apply(mod_count);
         apply(mod_match);
 }
 control write_7_mod {
         apply(write_id_7);
-        apply(add_count);
+        apply(add_count_7);
         apply(write_c_7);
         apply(mod_count);
         apply(mod_match);
 }
 control write_8_mod {
         apply(write_id_8);
-        apply(add_count);
+        apply(add_count_8);
         apply(write_c_8);
         apply(mod_count);
         apply(mod_match);
@@ -977,53 +1007,53 @@ control mod_s_8 {
 
 control already_2 {
 	read_2();
-	if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
+	if(meta.tmp_existing_flow_count==0 or meta.tmp_existing_flow_id==meta.my_flowID)
 		write_2_mod();
-	else if(meta.carry_min>meta.tmp_existing_flow_count)
+	if (meta.tmp_existing_flow_count!= 0 and meta.tmp_existing_flow_id!=meta.my_flowID and meta.carry_min>meta.tmp_existing_flow_count)
 		mod_s_2();
 }
 
 control already_3 {
-read_3()
-                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
+read_3();
+                        if(meta.tmp_existing_flow_count==0 or meta.tmp_existing_flow_id==meta.my_flowID)
                                 write_3_mod();
-                        else if(meta.carry_min>meta.tmp_existing_flow_count)
+			if (meta.tmp_existing_flow_count!= 0 and meta.tmp_existing_flow_id!=meta.my_flowID and meta.carry_min>meta.tmp_existing_flow_count)
                                         mod_s_3(); 
 }
 
 control already_4 {
-read_4()
-                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
+read_4();
+                        if(meta.tmp_existing_flow_count==0 or meta.tmp_existing_flow_id==meta.my_flowID)
                                 write_4_mod();
-                        else if(meta.carry_min>meta.tmp_existing_flow_count)
+			if (meta.tmp_existing_flow_count!= 0 and meta.tmp_existing_flow_id!=meta.my_flowID and meta.carry_min>meta.tmp_existing_flow_count)
                                         mod_s_4();
 }
 control already_5 {
 read_5();
-                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
+                        if(meta.tmp_existing_flow_count==0 or meta.tmp_existing_flow_id==meta.my_flowID)
                                 write_5_mod();
-                        else if(meta.carry_min>meta.tmp_existing_flow_count)
+			if (meta.tmp_existing_flow_count!= 0 and meta.tmp_existing_flow_id!=meta.my_flowID and meta.carry_min>meta.tmp_existing_flow_count)
                                         mod_s_5();
 }
 control already_6 {
 read_6();
-                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
+                        if(meta.tmp_existing_flow_count==0 or meta.tmp_existing_flow_id==meta.my_flowID)
                                 write_6_mod();
-                        else if(meta.carry_min>meta.tmp_existing_flow_count)
+			if (meta.tmp_existing_flow_count!= 0 and meta.tmp_existing_flow_id!=meta.my_flowID and meta.carry_min>meta.tmp_existing_flow_count)
                                         mod_s_6();
 }
 control already_7 {
 read_7();
-                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
+                        if(meta.tmp_existing_flow_count==0 or meta.tmp_existing_flow_id==meta.my_flowID)
                                 write_7_mod();
-                        else if(meta.carry_min>meta.tmp_existing_flow_count){
+			if (meta.tmp_existing_flow_count!= 0 and meta.tmp_existing_flow_id!=meta.my_flowID and meta.carry_min>meta.tmp_existing_flow_count)
                                         mod_s_7();
 }
 control already_8 {
 read_8();
-                        if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
+                        if(meta.tmp_existing_flow_count==0 or meta.tmp_existing_flow_id==meta.my_flowID)
                                 write_8_mod();
-                        else if(meta.carry_min>meta.tmp_existing_flow_count)
+			if (meta.tmp_existing_flow_count!= 0 and meta.tmp_existing_flow_id!=meta.my_flowID and meta.carry_min>meta.tmp_existing_flow_count)
                                         mod_s_8();
 }
 control already_approx {
@@ -1034,9 +1064,9 @@ apply(rands);
 
 control type_0 {
 read_1();
-                if(meta.tmp_existing_flow_count==0 || meta.tmp_existing_flow_id==meta.my_flowID)
+                if(meta.tmp_existing_flow_count==0 or meta.tmp_existing_flow_id==meta.my_flowID)
                         write_1_mod();
-                else 
+                if(meta.tmp_existing_flow_count!=0 and meta.tmp_existing_flow_id!=meta.my_flowID) 
                         mod_s_1();  
 
                 if(meta.already_matched==0)
@@ -1062,7 +1092,7 @@ read_1();
 
 
                 if(meta.already_matched==0)
-                        already_aprox();
+                        already_approx();
 }
 
 control w_1 {
@@ -1072,37 +1102,37 @@ apply(write_id_1);
 }
 control w_2 {
 apply(write_id_2);
-                        apply(add_count);
+                        apply(add_count_2);
                         apply(write_c_2);
 }
 control w_3 {
 apply(write_id_3);
-                        apply(add_count);
+                        apply(add_count_3);
                         apply(write_c_3);
 }
 control w_4 {
 apply(write_id_4);
-                        apply(add_count);
+                        apply(add_count_4);
                         apply(write_c_4);
 }
 control w_5 {
 apply(write_id_5);
-                        apply(add_count);
+                        apply(add_count_5);
                         apply(write_c_5);
 }
 control w_6 {
 apply(write_id_6);
-                        apply(add_count);
+                        apply(add_count_6);
                         apply(write_c_6);
 }
 control w_7 {
 apply(write_id_7);
-                        apply(add_count);
+                        apply(add_count_7);
                         apply(write_c_7);
 }
 control w_8 {
 apply(write_id_8);
-                        apply(add_count);
+                        apply(add_count_8);
                         apply(write_c_8);
 }
 
@@ -1136,14 +1166,12 @@ control egress {
         apply(compute_reg_index_6);
         apply(compute_reg_index_7);
         apply(compute_reg_index_8);
-        apply(compute_reg_index_9);
-        apply(compute_reg_index_10);
 
 	apply(set_est_count);
 
-	if(standard_metadata.instance_type==0)
-		type_0();
-	else
+	//if(standard_metadata.instance_type==0)
+	//	type_0();
+	if(standard_metadata.instance_type!=0)
 		not_type_0();
 
 	
@@ -1154,6 +1182,7 @@ control egress {
 
 
 // =========== End implementation of PRECISION ===========
+
 
 
 
