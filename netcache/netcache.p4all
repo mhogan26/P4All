@@ -1,0 +1,314 @@
+#include "includes/headers.p4"
+#include "includes/parsers.p4"
+#include "includes/checksum.p4"
+
+
+#define NC_PORT 8888
+
+#define NC_READ_REQUEST     0
+#define NC_READ_REPLY       1
+#define NC_HOT_READ_REQUEST 2
+#define NC_WRITE_REQUEST    4
+#define NC_WRITE_REPLY      5
+#define NC_UPDATE_REQUEST   8
+#define NC_UPDATE_REPLY     9
+
+const bit<16> TYPE_IPV4 = 0x800;
+
+#define IPV4_PROTOCOL_UDP 17
+
+typedef bit<9>  egressSpec_t;
+typedef bit<48> macAddr_t;
+typedef bit<32> ip4Addr_t;
+
+symbolic int NUM_CACHE;
+symbolic int num_rows;
+
+
+header ethernet_t {
+    macAddr_t dstAddr;
+    macAddr_t srcAddr;
+    bit<16>   etherType;
+}
+
+header ipv4_t {
+    bit<4>    version;
+    bit<4>    ihl;
+    bit<8>    diffserv;
+    bit<16>   totalLen;
+    bit<16>   identification;
+    bit<3>    flags;
+    bit<13>   fragOffset;
+    bit<8>    ttl;
+    bit<8>    protocol;
+    bit<16>   hdrChecksum;
+    ip4Addr_t srcAddr;
+    ip4Addr_t dstAddr;
+}
+
+header udp_t {
+    bit<16>   srcPort;
+    bit<16>   dstPort;
+    bit<16>   len;
+    bit<16>   checksum;
+}
+
+header nc_value_t {
+    bit<32>   value_1;
+    bit<32>   value_2;
+    bit<32>   value_3;
+    bit<32>   value_4;
+}
+
+header nc_hdr_t {
+	bit<8> op;
+	bit<128> key;
+}
+
+struct custom_metadata_t {
+        bit<1> cache_exist;
+        bit<14> cache_index;
+        bit<1> cache_valid;
+	bit<32> ipv4_srcAddr;
+	bit<32> ipv4_dstAddr
+}
+
+struct headers {
+    ethernet_t   ethernet;
+    ipv4_t       ipv4;
+    udp_t        udp;
+    nc_hdr_t	 nc_hdr;
+    nc_value_t[num_rows] nc_value;
+}
+
+
+parser MyParser(packet_in packet,
+                out headers hdr,
+                inout custom_metadata_t meta,
+                inout standard_metadata_t standard_metadata) {
+
+    state start {
+        transition parse_ethernet;
+    }
+
+    state parse_ethernet {
+        packet.extract(hdr.ethernet);
+        transition select(hdr.ethernet.etherType) {
+            TYPE_IPV4: parse_ipv4;
+            default: accept;
+        }
+    }
+    state parse_ipv4 {
+        packet.extract(hdr.ipv4);
+        transition select(hdr.ipv4.protocol) {
+		IPV4_PROTOCOL_UDP: parse_udp;
+		default: accept;
+	}
+    }
+
+    state parse_udp {
+	packet.extract(hdr.udp);
+	transition select(hdr.udp.dstPort) {
+		NC_PORT: parse_nc_hdr;
+		default: accept;
+	}
+    }
+
+    state parse_nc_hdr {
+	packet.extract(hdr.nc_hdr);
+	transition select(hdr.nc_hdr.op) {
+        	NC_READ_REQUEST: accept;
+        	NC_READ_REPLY: parse_value;
+        	NC_HOT_READ_REQUEST: parse_nc_load;
+        	NC_UPDATE_REQUEST: accept;
+        	NC_UPDATE_REPLY: parse_value;
+        	default: accept;
+	}
+    }
+
+    state parse_nc_load {
+	packet.extract(hdr.nc_load);
+	transition accept;
+    }
+
+    state parse_value {
+	transition parse_nc_value_0;
+    }
+
+   for (i < num_rows) {
+	state parse_value[i] {
+		packet.extract(hdr.nc_value[i]);
+		transition parse_value[i+1];
+	}
+    }
+
+   state parse_value[num_rows] {
+	transition accept;
+   }
+
+
+}
+
+
+control MyVerifyChecksum(inout headers hdr, inout custom_metadata_t meta) {
+    apply {  }
+}
+
+control MyIngress(inout headers hdr,
+                  inout custom_metadata_t meta,
+                  inout standard_metadata_t standard_metadata) {
+
+
+    register<bit<1>>(NUM_CACHE) cache_valid_reg;
+
+    register<bit<32>>(NUM_CACHE)  value_1_reg;
+    value_1_reg[num_rows] value_1_regs;
+    register<bit<32>>(NUM_CACHE)  value_2_reg;
+    value_2_reg[num_rows] value_2_regs;
+    register<bit<32>>(NUM_CACHE)  value_3_reg;
+    value_3_reg[num_rows] value_3_regs;
+    register<bit<32>>(NUM_CACHE)  value_4_reg;
+    value_4_reg[num_rows] value_4_regs;
+
+    action set_egress(egress_spec) {
+	standard_metadata.egress_spec=egress_spec
+	hdr.ipv4.ttl = hdr.ipv4.ttl + -1;
+    }
+
+    @pragma stage 11
+    table ipv4_route {
+	actions {
+		set_egress;
+	}
+	key {
+		hdr.ipv4.dstAddr : exact;
+	}
+	size=8192;
+    }
+
+
+    action check_cache_exist_act(index) {
+    	meta.cache_exist=1;
+    	meta.cache_index=index;
+    }
+
+
+    action check_cache_valid_act() {
+	cache_valid_reg.read(meta.cache_valid,meta.cache_index);
+    }
+
+    action set_cache_valid_act() {
+	cache_valid_reg.write(meta.cache_index,1);
+    }
+
+    action reply_read_hit_before() {
+	meta.ipv4_srcAddr = hdr.ipv4.srcAddr;
+	meta.ipv4_dstAddr = hdr.ipv4.dstAddr;
+    }
+
+    action reply_read_hit_after() {
+	hdr.ipv4.srcAddr = meta.ipv4_dstAddr;
+	hdr.ipv4.dstAddr = meta.ipv4_srcAddr;
+	hdr.nc_hdr.op = NC_READ_REPLY;
+    }
+
+    action add_value_header()[int i] {
+	hdr.ipv4.totalLen = hdr.ipv4.totalLen + 16;
+	hdr.udp.len += 16;
+	hdr.nc_value[i].setValid();
+    }
+
+   action remove_value_header()[int i] {
+	hdr.ipv4.totalLen = hdr.ipv4.totalLen - 16;
+        hdr.udp.len = hdr.udp.len - 16;
+        hdr.nc_value[i].setInvalid();
+   }
+
+        action read_value_1()[int i] {
+                value_1_regs[i].read(hdr.nc_value[i].value_1, meta.cache_index);
+        }
+        action read_value_2()[int i] {
+                value_2_regs[i].read(hdr.nc_value[i].value_2, meta.cache_index);
+        }
+
+        action read_value_3()[int i] {
+                value_3_regs[i].read(hdr.nc_value[i].value_3, meta.cache_index);
+        }
+        action read_value_4()[int i] {
+                value_4_regs[i].read(hdr.nc_value[i].value_4, meta.cache_index);
+        }
+
+        action write_value_1()[int i] {
+                value_1_regs[i].write(meta.cache_index, hdr.nc_value[i].value_1);
+        }
+
+        action write_value_2()[int i] {
+                value_2_regs[i].write(meta.cache_index, hdr.nc_value[i].value_2);
+        }
+        action write_value_3()[int i] {
+                value_3_regs[i].write(meta.cache_index, hdr.nc_value[i].value_3);
+        }
+        action write_value_4()[int i] {
+                value_4_regs[i].write(meta.cache_index, hdr.nc_value[i].value_4);
+        }
+
+
+    apply {
+	check_cache_exist();
+    	if (meta.cache_exist == 1) {
+        	if (hdr.nc_hdr.op == NC_READ_REQUEST) {
+            		check_cache_valid();
+        	}
+        	else if (hdr.nc_hdr.op == NC_UPDATE_REPLY) {
+            		set_cache_valid();
+        	}
+    	}
+
+
+	if (hdr.nc_hdr.op == NC_READ_REQUEST and meta.cache_valid == 1) {
+        	reply_read_hit_before();
+	}
+
+	for (i < num_rows) {
+
+        	if (hdr.nc_hdr.op == NC_READ_REQUEST and meta.cache_valid == 1) {
+            		add_value_header()[i];
+            		read_value_1()[i];
+            		read_value_2()[i];
+            		read_value_3()[i];
+            		read_value_4()[i];
+        	}
+        	else if (hdr.nc_hdr.op == NC_UPDATE_REPLY and meta.cache_exist == 1) {
+            		write_value_1()[i];
+            		write_value_2()[i];
+            		write_value_3()[i];
+            		write_value_4()[i];
+            		remove_value_header()[i];
+        	}
+    	}
+
+    	if (hdr.nc_hdr.op == NC_READ_REQUEST and meta.cache_valid == 1) {
+        	reply_read_hit_after();
+    	}
+    
+	ipv4_route.apply()
+    }
+}
+
+control MyEgress(inout headers hdr, inout custom_metadata_t meta, inout standard_metadata_t standard_metadata) {
+
+
+    action ethernet_set_mac_act (smac, dmac) {
+	hdr.ethernet.srcAddr=smac;
+	hdr.ethernet.dstAddr=dmac;
+    }
+
+    apply {
+
+
+    if (nc_hdr.op == NC_READ_REQUEST and nc_cache_md.cache_exist != 1) {
+        heavy_hitter();
+    }
+	ethernet_set_mac();
+    }
+}
