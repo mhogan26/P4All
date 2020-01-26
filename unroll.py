@@ -12,8 +12,6 @@ import time
 
 # TO CALL: python unroll.py .p4all constraint file(.txt) 0(init)/1(afterILP) symb value symb value(if afterILP)
 
-# change so regex matches instead of if " " + or if "\t" + etc.
-
 start_time = time.time()
 
 afterILP = False
@@ -35,12 +33,7 @@ constraint_name = sys.argv[2]
 upper = 1
 # get basic upper bound for symbolic vars (stateless * stages) from constraint file if before ILP
 if not afterILP:
-	with open(constraint_name, "r") as con_file:
-		for line in con_file:
-			line = line.split()
-			if "stateless" in line[0] or "stages" in line[0]:
-				upper = upper * int(line[1])
-
+	upper = 2
 # parse p4all file into list of lines
 with open(p4all_name, "r") as p4all_file:
     p4all = p4all_file.readlines()
@@ -440,6 +433,16 @@ with open("output.p4","w") as p4:
 	for line in p4all:
 		p4.write(line)
 '''
+
+print("--- %s seconds ---" % (time.time() - start_time))
+
+with open("act_numbers.txt","w") as numbs:
+	json.dump(act_numbers,numbs)
+
+with open("reg_acts.txt","w") as regacts:
+	json.dump(reg_acts,regacts)
+
+
 '''
 for line in p4all:
 	print(line)
@@ -467,4 +470,3 @@ with open("loops.txt","w") as loopf:
 
 '''
 
-print("--- %s seconds ---" % (time.time() - start_time))
