@@ -141,10 +141,45 @@ for var in symbolics:
 # parsers
 # MUST REPLACE METADATA AND WHEREVER USED! --> PARSER
 c_i = current_index
+in_loop = False
+c=0
+parser_to_unroll = []
 for i in range(c_i,len(p4all)):
 	current_index = i
 	if "control MyVerifyChecksum" in p4all[i]:
 		break
+	if "for" in p4all[i]:
+		in_loop = True
+		c += 1
+		iterations = concrete[p4all[i].strip().split('<')[1].split(')')[0].strip()]
+		p4all[i] = ""
+		loop_index = i
+	if in_loop and "{" in p4all[i]:
+		c += 1
+	if in_loop and "}" in p4all[i]:
+		c -= 1
+		if c==0:
+			in_loop=False
+			p4all[i] = ""
+			for val in range(iterations):
+				for a in parser_to_unroll:
+					if "[i]" in a:
+						a = a.replace("[i]","_"+str(val))
+					# check for [i+1] stmts
+					if "[i+" in a:
+						expr = a.split("[")[1].split("]")[0]
+						con = val + int(expr.split("+")[1])
+						a = a.replace("["+expr+"]","_"+str(con))
+					p4all[loop_index] += a
+	if in_loop:
+		parser_to_unroll.append(p4all[i])
+		p4all[i] = "" 
+	elif "[" in p4all[i]:	# symbolic var here
+		line = p4all[i].split("[")
+		expr = line[1].split("]")[0]
+		#con = concrete[expr.split("+")[0]] + int(expr.split("+")[1])
+		con = concrete[expr]
+		p4all[i] = p4all[i].replace("["+expr+"]", "_"+str(con))
 
 # checksum
 c_i = current_index
