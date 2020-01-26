@@ -93,7 +93,7 @@ c_i = current_index
 for i in range(c_i,len(p4all)):
 	current_index = i
 	line = p4all[i]
-	if "struct" in line:
+	if "struct" in line or "header" in line:
 		l = line.split()
 		name = l[1]
 		fields = {}
@@ -347,6 +347,7 @@ for i in range(apply_start,len(p4all)):
 			curr_act_num += 1
 
 
+
 # action def duplication
 # acts_to_unroll -> (name,start index): [body strings] - including }!
 # acts_iters -> name: iteration nums
@@ -381,6 +382,14 @@ for k in acts_to_unroll:
 							line[m] = line[m].replace("[i].","")
 
 					line = "meta.".join(line)
+				if "hdr." in line:
+					line = line.split("hdr.")
+					for m in range(len(line)):
+						 if line[m].split("[i]")[0].strip() in meta_to_unroll:
+							line[m] = line[m].replace(line[m].split("[i]")[0].strip(),line[m].split("[i]")[0].strip()+"_"+str(val))
+							#line[m] = line[m].replace(line[m].split("[i]")[1].strip().split(" ")[0].split(",")[0].split(")")[0].split("(")[0].split("{")[0].split("}")[0].split(";")[0], line[m].split("[i]")[1].strip().split(" ")[0].split(",")[0].split(")")[0].split("(")[0].split("{")[0].split("}")[0].split(";")[0]+"_"+str(val))
+							line[m] = line[m].replace("[i].",".")
+					line = "hdr.".join(line)
 			if "[i]" in line:	# we have registers and/or arrays left to replace
 				# let's just do basic search to find what we have
 				for a in arrays:
@@ -427,21 +436,18 @@ for k in acts_to_unroll:
 # for loop actions: create separate action function for each iteration
 	# find action _____ in p4all file and copy body for each iteration
 
-
+'''
 # write to p4 file / stdout
 with open("output.p4","w") as p4:
 	for line in p4all:
 		p4.write(line)
-'''
+#print("--- %s seconds ---" % (time.time() - start_time))
 
-print("--- %s seconds ---" % (time.time() - start_time))
+#with open("reg_acts.txt","w") as regacts:
+#	json.dump(reg_acts,regacts)
 
-with open("act_numbers.txt","w") as numbs:
-	json.dump(act_numbers,numbs)
 
-with open("reg_acts.txt","w") as regacts:
-	json.dump(reg_acts,regacts)
-
+#print meta_to_unroll
 
 '''
 for line in p4all:
