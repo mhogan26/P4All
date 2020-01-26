@@ -89,11 +89,27 @@ for i in range(len(p4all)):
 # this ignores headers - assume we can't make changes to regular ipv4, ethernet, etc. headers - metadata always in struct
 # should we also skip the struct headers def?? - leaving it in now, but not sure if symb var would ever actually show up here
 structs = {}
+headers = {}
 c_i = current_index
 for i in range(c_i,len(p4all)):
 	current_index = i
 	line = p4all[i]
-	if "struct" in line or "header" in line:
+        if "header" in line:
+                l = line.split()
+                name = l[1]
+                fields = {}
+                # keep iterating until end of struct
+                o = 1
+                nex = p4all[i+o]
+                while "}" not in nex:
+                        fields[nex] = i+o
+                        o +=1
+                        nex = p4all[i+o]
+                fields[nex] = i+o
+                headers[name] = [i,fields]
+		continue
+
+	if "struct" in line:
 		l = line.split()
 		name = l[1]
 		fields = {}
@@ -137,9 +153,40 @@ for var in symbolics:
 				# line f is p4all[structs[s][1][f]]
 				# join unrolled_fields together w/ newline
 				p4all[structs[s][1][f]] = "\n".join(unrolled_fields)
-				
+
+l = headers["headers"]
+hdrs_unroll = {}	# name, iterations
+for h in l[1]:
+	num = l[1][h]
+	if "[" in h:
+		p4all[num] = ""
+		t = h.split("[")
+		iterations = concrete[t[1].split("]")[0]]
+		hdrs_unroll[t[0]] = iterations
+		name = t[1].split()[1].split(';')[0]
+		for val in range(iterations):
+			a = h.replace("["+t[1].split("]")[0]+"]","")
+			a = a.replace(name,name+"_"+str(val))
+			p4all[num] += a
+for h in hdrs_unroll:
+	name = h.strip()
+	iterations = hdrs_unroll[h]
+	num = headers[name][0]
+	decl = p4all[num]
+	p4all[num] = ""
+	for val in range(iterations):
+		d = decl.replace(name,name+"_"+str(val))
+		p4all[num] += d
+		for line in headers[name][1]:
+			p4all[num] += line
+	for line in headers[name][1]:
+		p4all[headers[name][1][line]] = ""
+
+
+#exit()
+
+
 # parsers
-# MUST REPLACE METADATA AND WHEREVER USED! --> PARSER
 c_i = current_index
 in_loop = False
 c=0
