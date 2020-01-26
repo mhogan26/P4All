@@ -282,6 +282,8 @@ loop_body = []
 loop_index = 0
 acts_iters = {}
 for_sym = ""
+act_numbers = {} # act_name: number
+curr_act_num = 0
 for i in range(apply_start,len(p4all)):
 	current_index = i
 	if "control MyEgress" in p4all[i]:
@@ -312,6 +314,9 @@ for i in range(apply_start,len(p4all)):
 			for val in range(iterations):
 				for a in loop_body:
 					# check for if stmt with meta [i] - don't care about else stmts, just ifs (or else ifs)
+					if ");" in a.strip() and "[i]" not in a.replace(' ',''):
+						act_numbers[a.strip().split("(")[0]] = curr_act_num
+						curr_act_num += 1
 					if "if(" in a.replace(' ','') and "[i]" in a.replace(' ',''):
 						# replace meta[i]
 						old_name = a.strip().split("[i]")[0].split("meta.")[1]
@@ -326,6 +331,8 @@ for i in range(apply_start,len(p4all)):
 						old_act = a.strip().split('(')[0]
 						acts_iters[old_act] = (iterations,for_sym)
 						a = a.replace(old_act,old_act+"_"+str(val))
+						act_numbers[old_act+"_"+str(val)] = curr_act_num
+						curr_act_num += 1
 						p4all[loop_index] = p4all[loop_index]+a
 						continue
 
@@ -339,14 +346,19 @@ for i in range(apply_start,len(p4all)):
 
 	# if we're outside of loop, we probably won't have any calls to meta[i] with some concrete val for i, skip this check for now
 
-	# else:
-	#	this is an action (unless it's a "{"/"}") and we should count it
+	else:
+		# this is an action (unless it's a "{"/"}") and we should count it
+		if ");" in p4all[i].strip():
+			# this won't work if we have a table call!!!! ONLY for action calls (?)
+			act_numbers[p4all[i].strip().split("(")[0]] = curr_act_num
+			curr_act_num += 1
 
 
 # action def duplication
 # acts_to_unroll -> (name,start index): [body strings] - including }!
 # acts_iters -> name: iteration nums
-arr_constraints = {}
+arr_constraints = {}	# array name: symbolic variable
+reg_acts = {}	# reg name: [actions using reg]
 for k in acts_to_unroll:
 	a_name = k[0]
 	a_start = k[1]
@@ -357,6 +369,7 @@ for k in acts_to_unroll:
 	for val in range(iterations):
 		d = decl.split("(")
 		d[0] = d[0]+"_"+str(val)
+		curr_act_iter = d[0].strip().split("action")[1]
 		d = "(".join(d)
 		p4all[a_start] = p4all[a_start] + d
 		for l in range(len(acts_to_unroll[k])):
@@ -380,7 +393,8 @@ for k in acts_to_unroll:
 				for a in arrays:
 					if a+"[i]" in line:
 						line = line.replace(a+"[i]",arrays[a][val])
-						arr_constraints[a] = sym
+						if a not in arr_constraints:
+							arr_constraints[a] = sym
 				for r in reg_to_unroll:
 					arr = r[0]
 					reg = r[1]
@@ -388,6 +402,19 @@ for k in acts_to_unroll:
 						line = line.replace(arr+"[i]",reg+"_"+str(val))
 
 			p4all[a_start] = p4all[a_start] + line
+			if ".read(" in line:   # stateful action that uses register
+				r_name = line.split(".read")[0].strip()
+				if r_name not in reg_acts:
+					reg_acts[r_name] = []
+                                if curr_act_iter not in reg_acts[r_name]:
+					reg_acts[r_name].append(curr_act_iter)
+			if ".write(" in line:   # stateful action that uses register
+				r_name = line.split(".write")[0].strip()
+                                if r_name not in reg_acts:
+                                        reg_acts[r_name] = []
+				if curr_act_iter not in reg_acts[r_name]:
+                                	reg_acts[r_name].append(curr_act_iter)
+				
 '''
 # FIX SO SYMBOLIC VAR NAME COMMENTED OUT DOESN'T GET REPLACED
 # INCORPORATE TABLES INTO P4ALL
@@ -418,8 +445,6 @@ for line in p4all:
 	print(line)
 '''
 
-print arr_constraints
-
 '''
 # write symbolic var names to file if before ILP
 # memory sybmolics treated differently - mem_symbolics
@@ -433,10 +458,13 @@ if not afterILP:
 		for l in assume:
 			assu.write(l+"\n")
 
-# write loop groupsings to file
+# write loop groupings to file
 with open("loops.txt","w") as loopf:
 	loopf.write(json.dumps(loop_acts))
-'''
+# write reg_acts to file - to know which acts use same register
 
+# write arr_constraints to file - to know which actions use fixed-length array (ILP const)
+
+'''
 
 print("--- %s seconds ---" % (time.time() - start_time))
