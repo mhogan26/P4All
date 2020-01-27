@@ -14,14 +14,14 @@ start_time = time.time()
 
 # input from unrolled p4 program:
 # N value (upper bound on num actions)
-N = 50
+N = 10
 # dependencies
 deps = {(0,5):1, (1,6):1, (2,7):1, (3,8):1, (4,9):1, (5,6):2, (5,7):2, (5,8):2, (5,9):2, (6,7):2, (6,8):2, (6,9):2, (7,8):2, (7,9):2, (8,9):2}
 # list of stateful action indices
 stateful = [0,1,2,3,4]
 # list of groups
 groups = [[0,5], [1,6], [2,7], [3,8], [4,9]]
-# list of which loops actions are in
+# list of which actions are in same loop
 loops = [[0,1,2,3,4], [5,6,7,8,9]]
 
 # switch resources input:
@@ -30,7 +30,7 @@ total_mem = 2048
 # lower bound for reg size
 reg_bound = 256
 # num stages
-num_stg = 20
+num_stg = 3
 # stateful actions per stg
 num_state = 5
 
@@ -67,6 +67,11 @@ for key in deps:
 		for x in range(len(act_vars[a0])):
 			m.addConstr(act_vars[a0][x]<=(1-act_vars[a1][x]))
 
+        elif deps[key] == 3:    # same stg
+                for x in range(len(act_vars[a0])):
+                        m.addConstr(act_vars[a0][x] == act_vars[a1][x])
+
+
 # stateful action constraint
 for x in stages_vars:
 	m.addConstr(quicksum(x)<=num_state)
@@ -97,29 +102,43 @@ for i in range(num_stg):
 #act_count = 0
 for l in stateful:
 	stg_count = 0
+	mem_vars.append([])
 	for i in range(len(act_vars[l])):
-		mem_vars.append(m.addVar(lb=0,vtype=GRB.INTEGER,name="mem%s%s"%(l,stg_count)))
-		stages_mem_vars[i].append(mem_vars[-1])
-		m.addConstr(mem_vars[-1] <= act_vars[l][i]*total_mem)	# actions not allocated have 0 memory
-		m.addConstr(mem_vars[-1] >= act_vars[l][i])		# actions in stgs have nonzero memory allocation
+		mem_vars[l].append(m.addVar(lb=0,vtype=GRB.INTEGER,name="mem%s%s"%(l,stg_count)))
+		stages_mem_vars[i].append(mem_vars[l][-1])
+		m.addConstr(mem_vars[l][-1] <= act_vars[l][i]*total_mem)	# actions not allocated have 0 memory
+		m.addConstr(mem_vars[l][-1] >= act_vars[l][i])		# actions in stgs have nonzero memory allocation
 		stg_count += 1
 	#act_count += 1
+
 for l in stages_mem_vars:
 	m.addConstr(quicksum(l) <= total_mem)			# memory allocated in each stg adheres to memory constraints
 # constraint so each row gets SAME amount of memory - how to identify this in orig program/represent in graph?
 # all reg arrays contained in array in p4all program should get same amount memory
+'''
 for l in range(len(mem_vars)):
 	if l == 0:
 		continue
-	m.addConstr(mem_vars[(l-1)] == mem_vars[l])
+	m.addConstr(quicksum(mem_vars[(l-1)])-quicksum(mem_vars[l]) >= (1-quicksum(act_vars[l-1]))*(1-quicksum(act_vars[l]))*total_mem)
+        m.addConstr(quicksum(mem_vars[(l)])-quicksum(mem_vars[l-1]) <= (1-quicksum(act_vars[l-1]))*(1-quicksum(act_vars[l]))*(-total_mem))
+'''
 
+#m.addConstr(quicksum(mem_vars[0])-quicksum(mem_vars[1]) <= (quicksum(act_vars[0]))*(quicksum(act_vars[1]))*total_mem)
+#m.addConstr(quicksum(mem_vars[1])-quicksum(mem_vars[0]) >= (quicksum(act_vars[0]))*(quicksum(act_vars[1]))*(-total_mem))
+
+#m.addConstr(quicksum(mem_vars[1])-quicksum(mem_vars[2]) <= (quicksum(act_vars[1]))*(quicksum(act_vars[2]))*total_mem)
+#m.addConstr(quicksum(mem_vars[2])-quicksum(mem_vars[1]) >= (quicksum(act_vars[1]))*(quicksum(act_vars[2]))*(-total_mem))
+
+#m.addConstr(quicksum(mem_vars[2])-quicksum(mem_vars[3]) <= (quicksum(act_vars[2]))*(quicksum(act_vars[3]))*total_mem)
+#m.addConstr(quicksum(mem_vars[3])-quicksum(mem_vars[2]) >= (quicksum(act_vars[2]))*(quicksum(act_vars[3]))*(-total_mem))
 
 # how to split mem equally / ensure that one action doesn't get allocated all the memory??
 # do we need to account for this?
 
+
 # Objective to optimize
-#m.setObjective(quicksum(x for i in act_vars for x in i), GRB.MAXIMIZE)
-m.setObjective(quicksum(mem_vars), GRB.MAXIMIZE)
+m.setObjective(quicksum(x for i in act_vars for x in i), GRB.MAXIMIZE)
+#m.setObjective(quicksum(x for i in mem_vars for x in i), GRB.MAXIMIZE)
 
 # Solve
 m.optimize()
@@ -127,8 +146,8 @@ m.optimize()
 print("--- %s seconds ---" % (time.time() - start_time))
 
 # print all variable values
-#for v in m.getVars():
-#        print('%s %g' % (v.varName, v.x))
+for v in m.getVars():
+        print('%s %g' % (v.varName, v.x))
 
 
 '''
