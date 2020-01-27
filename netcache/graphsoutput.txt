@@ -1,0 +1,8 @@
+INGRESS PIPELINE
+['check_cache_exist']
+['check_cache_valid', 'set_cache_valid']
+['reply_read_hit_before', 'add_value_header_1']
+['reply_read_hit_after', 'read_value_1_2', 'add_value_header_2', 'read_value_1_1']
+['read_value_2_2', 'read_value_2_1', 'ipv4_route']
+pipeline ingress requires at least 5 stages
+

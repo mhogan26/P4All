@@ -1,0 +1,48 @@
+digraph ingress {
+_condition_6 [shape=box label="_condition_6\n((nc_hdr.op == 0) and (nc_cache_md.cache_valid == 1))"];
+_condition_5 [shape=box label="_condition_5\n((nc_hdr.op == 0) and (nc_cache_md.cache_valid == 1))"];
+_condition_4 [shape=box label="_condition_4\n((nc_hdr.op == 0) and (nc_cache_md.cache_valid == 1))"];
+_condition_3 [shape=box label="_condition_3\n((nc_hdr.op == 0) and (nc_cache_md.cache_valid == 1))"];
+_condition_2 [shape=box label="_condition_2\n(nc_hdr.op == 9)"];
+_condition_1 [shape=box label="_condition_1\n(nc_hdr.op == 0)"];
+_condition_0 [shape=box label="_condition_0\n(nc_cache_md.cache_exist == 1)"];
+read_value_1_1 -> read_value_1_2 [style=dotted ];
+reply_read_hit_after -> ipv4_route [color=red label="ipv4.dstAddr" decorate=true];
+add_value_header_2 -> read_value_2_2 [color=blue label="nc_value_2.value_2_2" decorate=true];
+add_value_header_2 -> read_value_2_1 [color=blue label="nc_value_2.value_2_1" decorate=true];
+_condition_6 -> reply_read_hit_after [color=green label="" decorate=true arrowhead = dot];
+_condition_6 -> ipv4_route [style=dotted ];
+reply_read_hit_before -> reply_read_hit_after [color=blue label="reply_read_hit_info_md.ipv4_srcAddr,
+reply_read_hit_info_md.ipv4_dstAddr" decorate=true];
+reply_read_hit_before -> _condition_4 [style=dotted ];
+add_value_header_1 -> read_value_1_2 [color=blue label="nc_value_1.value_1_2" decorate=true];
+add_value_header_1 -> add_value_header_2 [color=blue label="udp.len,
+ipv4.totalLen" decorate=true];
+add_value_header_1 -> read_value_1_1 [color=blue label="nc_value_1.value_1_1" decorate=true];
+set_cache_valid -> _condition_3 [style=dotted ];
+read_value_1_2 -> _condition_5 [style=dotted ];
+check_cache_valid -> _condition_3 [color=red label="nc_cache_md.cache_valid" decorate=true];
+check_cache_valid -> _condition_5 [color=red label="nc_cache_md.cache_valid" decorate=true];
+check_cache_valid -> _condition_2 [style=dotted ];
+check_cache_valid -> _condition_4 [color=red label="nc_cache_md.cache_valid" decorate=true];
+check_cache_valid -> _condition_6 [color=red label="nc_cache_md.cache_valid" decorate=true];
+_condition_5 -> _condition_6 [style=dotted ];
+_condition_5 -> reply_read_hit_after [color=yellow label="nc_hdr.op" decorate=true];
+_condition_5 -> add_value_header_2 [color=green label="" decorate=true arrowhead = dot];
+_condition_4 -> reply_read_hit_after [color=yellow label="nc_hdr.op" decorate=true];
+_condition_4 -> _condition_5 [style=dotted ];
+_condition_4 -> add_value_header_1 [color=green label="" decorate=true arrowhead = dot];
+_condition_3 -> reply_read_hit_before [color=green label="" decorate=true arrowhead = dot];
+_condition_3 -> _condition_4 [style=dotted ];
+_condition_2 -> _condition_3 [style=dotted ];
+_condition_2 -> reply_read_hit_after [color=yellow label="nc_hdr.op" decorate=true];
+_condition_2 -> set_cache_valid [color=green label="" decorate=true arrowhead = dot];
+_condition_1 -> check_cache_valid [color=green label="" decorate=true arrowhead = dot];
+_condition_1 -> _condition_2 [style=dotted ];
+_condition_0 -> _condition_3 [style=dotted ];
+_condition_0 -> _condition_2 [color=green label="" decorate=true arrowhead = dot];
+_condition_0 -> _condition_1 [color=green label="" decorate=true arrowhead = dot];
+read_value_2_2 -> _condition_6 [style=dotted ];
+check_cache_exist -> _condition_0 [color=red label="nc_cache_md.cache_exist" decorate=true];
+read_value_2_1 -> read_value_2_2 [style=dotted ];
+}
