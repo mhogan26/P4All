@@ -17,12 +17,15 @@ start_time = time.time()
 afterILP = False
 
 concrete = {}
+symbolics = []
+assume = []
 # check input - if not flag, then before ILP, so don't look for symbolic var input and use arbitrary vals
 # if flag, then after ILP calc, so parse input
 if int(sys.argv[3]) == 1:
 	afterILP = True
 	i = 4
 	while (i+1) < len(sys.argv):
+		symbolics.append(sys.argv[i])
 		concrete[sys.argv[i]] = int(sys.argv[i+1])
 		i+=2
 #concrete = {"num_arrays":1,"depth":4} # this is a map from symbolic var name: value
@@ -41,8 +44,6 @@ with open(p4all_name, "r") as p4all_file:
 
 # check for symbolic vars in parsed file and save var names
 # if this is second pass, we already know the symbolics and we don't need to save them
-symbolics = []
-assume = []
 
 # this loop should quit as soon as we get through the symbolics
 current_index = 0
@@ -86,8 +87,6 @@ for i in range(len(p4all)):
 # unroll metadata (anything outside blocks)
 # check for structs - assume can't have nested structs
 # save off structs in dict so when/if we have to unroll, we know what fields we need
-# this ignores headers - assume we can't make changes to regular ipv4, ethernet, etc. headers - metadata always in struct
-# should we also skip the struct headers def?? - leaving it in now, but not sure if symb var would ever actually show up here
 structs = {}
 headers = {}
 c_i = current_index
@@ -122,7 +121,6 @@ for i in range(c_i,len(p4all)):
 			nex = p4all[i+o]
 		fields[nex] = i+o
 		structs[name] = [i,fields]
-
 	if "parser" in line:
 		break
 
@@ -131,6 +129,7 @@ for i in range(c_i,len(p4all)):
 # replicate those struct fields in orig structs with new names - need to know what line num to put them
 # remove replicated struct
 meta_to_unroll = {}
+size_per_meta_unroll = {}	# var: size of metadata
 for var in symbolics:
 	val = concrete[var]
 	for s in structs:
@@ -141,36 +140,67 @@ for var in symbolics:
 				str_unroll_f = structs[temp[0].strip()][1]
 				p4all[structs[temp[0].strip()][0]] = ""		# remove struct declaration
 				unrolled_fields = []
+				x = 0
 				for field in str_unroll_f:
 					p4all[str_unroll_f[field]] = ""
 					if "}" in field:
 						continue
+					x += int(field.split("<")[1].split(">")[0])
 					for i in range(val):
 						fi = field.split(';')
 						fi[0] = fi[0]+"_%s"%i
 						unrolled_fields.append(fi[0]+';')
+				size_per_meta_unroll[var] = x
 				# need to replace line f with unrolled_fields
 				# line f is p4all[structs[s][1][f]]
 				# join unrolled_fields together w/ newline
 				p4all[structs[s][1][f]] = "\n".join(unrolled_fields)
 
+
 l = headers["headers"]
-hdrs_unroll = {}	# name, iterations
+hdrs_unroll = {}	# name, (new name,iterations)
 for h in l[1]:
 	num = l[1][h]
 	if "[" in h:
 		p4all[num] = ""
 		t = h.split("[")
 		iterations = concrete[t[1].split("]")[0]]
-		hdrs_unroll[t[0]] = iterations
+		t0 = h.split("]")[1].strip().split(';')[0]
+		hdrs_unroll[t0] = (t[0],iterations)
 		name = t[1].split()[1].split(';')[0]
 		for val in range(iterations):
 			a = h.replace("["+t[1].split("]")[0]+"]","")
 			a = a.replace(name,name+"_"+str(val))
 			p4all[num] += a
+
+sep_hdrs_unroll = []
+for h in headers:
+	if h=="headers":
+		continue
+	fs=headers[h][1]
+	for f in fs:
+		if "[" in f and "]" in f:
+			sep_hdrs_unroll.append(h.replace("_t",'')+"."+f.split()[1].split(';')[0])
+			val = int(concrete[f.split("[")[1].split("]")[0]])
+			p4all[fs[f]] = ""
+			# now we replace the header values
+			to_replace = f.split("[")[0].strip()
+			p4all[headers[to_replace][0]] = ""
+			unrolled_fields = []
+			for f_u in headers[to_replace][1]:
+				if "}" in f_u:
+					continue
+				p4all[headers[to_replace][1][f_u]] = ""
+				for i in range(val):
+					unrolled_fields.append(f_u.replace(f_u.split(";")[0],f_u.split(";")[0]+"_"+str(i)))
+
+			for x in unrolled_fields:
+				p4all[fs[f]] += x
+
+
 for h in hdrs_unroll:
-	name = h.strip()
-	iterations = hdrs_unroll[h]
+	name = hdrs_unroll[h][0].strip()
+	iterations = hdrs_unroll[h][1]
 	num = headers[name][0]
 	decl = p4all[num]
 	p4all[num] = ""
@@ -232,7 +262,7 @@ for i in range(c_i,len(p4all)):
 c_i = current_index
 for i in range(c_i,len(p4all)):
 	current_index = i
-	if "control MyIngress" in p4all[i]:
+	if "control MyEgress" in p4all[i]:
 		break
 
 # SEPARATE INGRESS/EGRESS UNROLLING
@@ -240,7 +270,7 @@ for i in range(c_i,len(p4all)):
 # this happens to everything w/ in control block (metadata processed separately above)
 # replace wherever symbolic vars are used with ilp vals
 
-control_start = current_index
+control_start = current_index + 1
 c = 0
 in_act = False
 unroll_act = False
@@ -305,7 +335,7 @@ for i in range(control_start,len(p4all)):
 		c -= 1
 		if c==0 and in_act:	# we got to the end of an action, set flags to False
 			if unroll_act:
-				 acts_to_unroll[(current_name,curr_name_index)].append(line)
+				 acts_to_unroll[(current_name,curr_name_index)].append(p4all[i])
 			in_act = False
 			unroll_act = False
 			continue
@@ -322,7 +352,6 @@ for i in range(control_start,len(p4all)):
 	if in_act and unroll_act:
 		line = p4all[i]
 		acts_to_unroll[(current_name,curr_name_index)].append(line)
-
 
 # array of registers unrolling
 for r in reg_to_unroll:
@@ -341,7 +370,6 @@ for r in reg_to_unroll:
 
 
 # apply block inside ingress control
-
 # unroll for loops
 #	replace metadata/reg arrays that use for loop index
 #	replace action calls with unrolled name
@@ -429,7 +457,6 @@ for i in range(apply_start,len(p4all)):
 			curr_act_num += 1
 
 
-
 # action def duplication
 # acts_to_unroll -> (name,start index): [body strings] - including }!
 # acts_iters -> name: iteration nums
@@ -467,10 +494,14 @@ for k in acts_to_unroll:
 				if "hdr." in line:
 					line = line.split("hdr.")
 					for m in range(len(line)):
-						 if line[m].split("[i]")[0].strip() in meta_to_unroll:
+						if line[m].split("[i]")[0].strip() in hdrs_unroll:
 							line[m] = line[m].replace(line[m].split("[i]")[0].strip(),line[m].split("[i]")[0].strip()+"_"+str(val))
 							#line[m] = line[m].replace(line[m].split("[i]")[1].strip().split(" ")[0].split(",")[0].split(")")[0].split("(")[0].split("{")[0].split("}")[0].split(";")[0], line[m].split("[i]")[1].strip().split(" ")[0].split(",")[0].split(")")[0].split("(")[0].split("{")[0].split("}")[0].split(";")[0]+"_"+str(val))
 							line[m] = line[m].replace("[i].",".")
+						elif line[m].split("[i]")[0].strip() in sep_hdrs_unroll:
+							line[m] = line[m].replace(line[m].split("[i]")[0].strip().split('.')[1],'')
+							line[m] = line[m].replace(line[m].split("[i]")[1].split()[0],line[m].split("[i]")[1].split()[0]+"_"+str(val))
+							line[m] = line[m].replace("[i].","")
 					line = "hdr.".join(line)
 			if "[i]" in line:	# we have registers and/or arrays left to replace
 				# let's just do basic search to find what we have
@@ -519,15 +550,21 @@ for k in acts_to_unroll:
 	# find action _____ in p4all file and copy body for each iteration
 
 '''
+#'''
 # write to p4 file / stdout
 with open("output.p4","w") as p4:
 	for line in p4all:
 		p4.write(line)
-#print("--- %s seconds ---" % (time.time() - start_time))
+#'''
+
+#print reg_acts
+
+print("--- %s seconds ---" % (time.time() - start_time))
 
 #with open("reg_acts.txt","w") as regacts:
 #	json.dump(reg_acts,regacts)
 
+#print reg_acts
 
 #print meta_to_unroll
 
