@@ -19,10 +19,15 @@ N = 10
 deps = {(0,5):1, (1,6):1, (2,7):1, (3,8):1, (4,9):1, (5,6):2, (5,7):2, (5,8):2, (5,9):2, (6,7):2, (6,8):2, (6,9):2, (7,8):2, (7,9):2, (8,9):2}
 # list of stateful action indices
 stateful = [0,1,2,3,4]
+# list of actions w/ corresponding metadata
+meta = [0,1,2,3,4]
+# amount of metadata per action
+meta_per = 64
 # list of groups
 groups = [[0,5], [1,6], [2,7], [3,8], [4,9]]
 # list of which actions are in same loop
 loops = [[0,1,2,3,4], [5,6,7,8,9]]
+
 
 # switch resources input:
 # total available stateful memory
@@ -33,6 +38,8 @@ reg_bound = 256
 num_stg = 3
 # stateful actions per stg
 num_state = 5
+# phv
+phv = 4096
 
 # Model
 m = Model("test")
@@ -101,13 +108,14 @@ for i in range(num_stg):
 	stages_mem_vars.append([])
 #act_count = 0
 for l in stateful:
+	j = stateful.index(l)
 	stg_count = 0
 	mem_vars.append([])
 	for i in range(len(act_vars[l])):
-		mem_vars[l].append(m.addVar(lb=0,vtype=GRB.INTEGER,name="mem%s%s"%(l,stg_count)))
-		stages_mem_vars[i].append(mem_vars[l][-1])
-		m.addConstr(mem_vars[l][-1] <= act_vars[l][i]*total_mem)	# actions not allocated have 0 memory
-		m.addConstr(mem_vars[l][-1] >= act_vars[l][i])		# actions in stgs have nonzero memory allocation
+		mem_vars[j].append(m.addVar(lb=0,vtype=GRB.INTEGER,name="mem%s%s"%(l,stg_count)))
+		stages_mem_vars[i].append(mem_vars[j][-1])
+		m.addConstr(mem_vars[j][-1] <= act_vars[l][i]*total_mem)	# actions not allocated have 0 memory
+		m.addConstr(mem_vars[j][-1] >= act_vars[l][i])		# actions in stgs have nonzero memory allocation
 		stg_count += 1
 	#act_count += 1
 
@@ -134,6 +142,15 @@ for l in range(len(mem_vars)):
 
 # how to split mem equally / ensure that one action doesn't get allocated all the memory??
 # do we need to account for this?
+
+# phv constraint
+# meta variables correspond to act_vars
+meta_vars = []
+for met in meta:
+	meta_vars.append(m.addVar(lb=0,vtype=GRB.BINARY,name="meta%s"%(met)))
+	m.addConstr(meta_vars[-1]==quicksum(act_vars[met]))
+
+m.addConstr(quicksum(meta_vars)*meta_per <= phv)
 
 
 # Objective to optimize
