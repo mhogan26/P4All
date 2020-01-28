@@ -1,0 +1,11 @@
+EGRESS PIPELINE
+['set_cache_valid', 'hh_load_4_count', 'check_cache_valid', 'hh_load_3_count', 'hh_load_2_count', 'hh_load_1_count']
+['reply_read_hit_before', 'report_hot']
+['reply_read_hit_after', 'add_value_header_1']
+['read_value_1_1', 'read_value_1_3', 'read_value_1_2', 'ipv4_route', 'read_value_1_4']
+['remove_value_header_1', 'write_value_1_2', 'write_value_1_3', 'write_value_1_1', 'write_value_1_4']
+['add_value_header_2']
+['read_value_2_4', 'read_value_2_1', 'read_value_2_2', 'read_value_2_3']
+['remove_value_header_2', 'write_value_2_4', 'write_value_2_2', 'write_value_2_3', 'write_value_2_1']
+pipeline egress requires at least 8 stages
+
