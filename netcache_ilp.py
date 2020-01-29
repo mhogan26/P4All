@@ -6,49 +6,83 @@
 
 #!/usr/bin/python
 from gurobipy import *
-
+import time
+import pickle
 
 # N value (upper bound on num actions)
-N = 18
+N = 1325
+act_nums = {}
+with open("act_nums.txt",'r') as a:
+	act_nums = pickle.load(a)
 
-# 0 is check cache exist
-# 1 is check cache valid
-# 2 is set cache valid
-# 3 is read hit before
-# 4,5,6 are add header and read array1
-# 10,11,12 are write array1 and remove header
-# 7,8,9 are add header and read array2
-# 13,14,15 are write array2 and remove header
-# 16 is read hit after
-# 17 is ipv4
-loops = [[0],[1],[2],[3],[4,5,6,7,8,9],[10,11,12,13,14,15],[16],[17]]
-# 0-3, 16-17 are required (if act is singleton in loop list, then require)
+
+#loops = [[0],[1],[2],[3],[4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75],[76],[77]]
 # NESTED FOR LOOPS????? OR JUST GROUP BY OUTERMOST LOOP?
-first_iters = [[4,5,6], [10,11,12]]
 
-groups = [[4,5,6,10,11,12],[7,8,9,13,14,15]]
+loops = [[0],[1],[],[],[act_nums["reply_read_hit_before"]],[],[act_nums["reply_read_hit_after"]]]
+stateful = []
+groups = []
+meta = [[],[]]
+stateful.append(0)
+for i in range(600):
+	loops[2].append(act_nums["hh_load_count_"+str(i)])
+	loops[3].append(act_nums["report_hot_2_"+str(i)])
+	stateful.append(act_nums["hh_load_count_"+str(i)])
+	groups.append([act_nums["hh_load_count_"+str(i)],act_nums["report_hot_2_"+str(i)]])
+	meta[0].append(act_nums["hh_load_count_"+str(i)])
+
+for i in range(12):
+	loops[5].append(act_nums["add_value_header_"+str(i)])
+        loops[5].append(act_nums["read_value_1_"+str(i)])
+        loops[5].append(act_nums["read_value_2_"+str(i)])
+        loops[5].append(act_nums["read_value_3_"+str(i)])
+        loops[5].append(act_nums["read_value_4_"+str(i)])
+        loops[5].append(act_nums["write_value_1_"+str(i)])
+        loops[5].append(act_nums["write_value_2_"+str(i)])
+        loops[5].append(act_nums["write_value_3_"+str(i)])
+        loops[5].append(act_nums["write_value_4_"+str(i)])
+        loops[5].append(act_nums["remove_value_header_"+str(i)])
+	stateful.append(act_nums["read_value_1_"+str(i)])
+	stateful.append(act_nums["read_value_2_"+str(i)])
+	stateful.append(act_nums["read_value_3_"+str(i)])
+	stateful.append(act_nums["read_value_4_"+str(i)])
+	groups.append([act_nums["add_value_header_"+str(i)],act_nums["read_value_1_"+str(i)],act_nums["read_value_2_"+str(i)],act_nums["read_value_3_"+str(i)],act_nums["read_value_4_"+str(i)],act_nums["write_value_1_"+str(i)],act_nums["write_value_2_"+str(i)],act_nums["write_value_3_"+str(i)],act_nums["write_value_4_"+str(i)],act_nums["remove_value_header_"+str(i)],act_nums["read_value_1_"+str(i)],act_nums["read_value_2_"+str(i)],act_nums["read_value_3_"+str(i)],act_nums["read_value_4_"+str(i)],])
+	meta[1].append(act_nums["add_value_header_"+str(i)])
+
+
+#first_iters = [[4,5,6,7,8,9]]
+
+first_iters = [[act_nums["hh_load_count_0"]],[act_nums["report_hot_2_0"]],[act_nums["add_value_header_0"],act_nums["read_value_1_0"],act_nums["read_value_1_1"],act_nums["read_value_1_2"],act_nums["read_value_1_3"],act_nums["write_value_1_0"],act_nums["write_value_1_1"],act_nums["write_value_1_2"],act_nums["write_value_1_3"],act_nums["remove_value_header_0"]]]
+
+#groups = [[4,5,6,7,8,9],[10,11,12,13,14,15],[16,17,18,19,20,21],[22,23,24,25,26,27],[28,29,30,31,32,33],[34,35,36,37,38,39],[40,41,42,43,44,45],[46,47,48,49,50,51],[52,53,54,55,56,57],[58,59,60,61,62,63],[64,65,66,67,68,69],[70,71,72,73,74,75]]
 
 # we only include read actions in stateful
 # corresponding write actions must be in same stg and read will never happen at same time as write (if/else)
-stateful = [1,5,6,8,9]
+#stateful = [1,5,6,11,12,17,18,23,24,29,30,35,36,41,42,47,48,53,54,59,60,65,66,71,72]
 
-# these deps are probs not correct, just based on an init manual pass through netcache code
-deps = {(0,1):1, (0,2):1, (0,10):1, (0,11):1, (0,12):1, (0,13):1, (0,14):1, (0,15):1, (0,5):1, (0,6):1, (0,8):1, (0,9):1, (1,3):1, (1,4):1, (1,5):1, (1,6):1, (1,7):1, (1,8):1, (1,9):1, (1,16):1, (3,16):1, (4,5):1, (4,6):1, (7,8):1, (7,9):1, (10,12):1, (11,12):1, (13,15):1, (14,15):1, (4,7):2, (12,15):2, (1,2):3, (5,10):3, (6,11):3, (8,13):3, (9,14):3}
+
+deps = {}
+with open("deps.txt",'r') as d:
+	deps = pickle.load(d)
 
 # same array read/writes MUST be in same stg
 # acts 1 + 2 in same stg, 5+10, 6+11, etc.
 # these are designated w/ dep type 3 in dep list
 
-num_slices = 2	# is this supposed to be the same # of stateful actions in a stage?
-num_arrays = 2
 # total available stateful memory
 total_mem = 2048
 # lower bound for reg size
 reg_bound = 256
 # num stages
-num_stg = 8
+num_stg = 12
 # stateful actions per stg
-num_state = 2
+num_state = 4
+# phv left after const
+phv = 3628
+# meta each action takes
+meta_per = [80,128]
+
+start_time = time.time()
 
 # Model
 m = Model("test")
@@ -60,10 +94,20 @@ for i in range(num_stg):
 	stages_a.append([])
 
 # decision variable for every (action num, stg num) pair
+cms_vars = []
+cms_vars_nums = []
+kv_vars = []
+kv_vars_nums = []
 for i in range(N):
 	a_vars.append([])
 	for j in range(num_stg):
 		a_vars[i].append(m.addVar(vtype=GRB.BINARY,name="act%s%s"%(i,j)))
+		if i >= act_nums["hh_load_count_0"] and i <= act_nums["report_hot_2_599"]:
+			cms_vars.append(a_vars[i][-1])
+			cms_vars_nums.append(i)
+		elif i >= act_nums["add_value_header_0"] and i <= act_nums["remove_value_header_11"]:
+			kv_vars.append(a_vars[i][-1])
+			kv_vars_nums.append(i)
 		if i in stateful:
 			stages_a[j].append(a_vars[i][j])
 	m.addConstr(quicksum(a_vars[i]) <= 1)	# only place action/reg once
@@ -128,33 +172,133 @@ for x in stages_a:
 # organize mem vars by action and stage (like a_vars) - sum of each stg list <= total_mem
 mem_vars = []
 stages_mem_vars = []
+cms_mem_vars = []
+kv_mem_vars = []
 for i in range(num_stg):
 	stages_mem_vars.append([])
 for l in stateful:
+	j = stateful.index(l)
 	stg_count = 0
+	mem_vars.append([])
 	for i in range(len(a_vars[l])):
-		mem_vars.append(m.addVar(lb=0,vtype=GRB.INTEGER,name="mem%s%s"%(l,stg_count)))
-		stages_mem_vars[i].append(mem_vars[-1])
-		m.addConstr(mem_vars[-1] <= a_vars[l][i]*total_mem)	# actions not allocated have 0 memory
-		m.addConstr(mem_vars[-1] >= a_vars[l][i])		# actions in stgs have nonzero memory allocation
+		mem_vars[j].append(m.addVar(lb=0,vtype=GRB.INTEGER,name="mem%s%s"%(l,stg_count)))
+		stages_mem_vars[i].append(mem_vars[j][-1])
+		m.addConstr(mem_vars[j][-1] <= a_vars[l][i]*total_mem)	# actions not allocated have 0 memory
+		m.addConstr(mem_vars[j][-1] >= a_vars[l][i])		# actions in stgs have nonzero memory allocation
 		stg_count += 1
+		if l > 0 and l < act_nums["read_value_1_0"]:
+			cms_mem_vars.append(mem_vars[j][-1])
+		else:
+			kv_mem_vars.append(mem_vars[j][-1])
 for l in stages_mem_vars:
 	m.addConstr(quicksum(l) <= total_mem)			# memory allocated in each stg adheres to memory constraints
+
+i_1 = stateful.index(act_nums["read_value_1_0"])
+i_2 = stateful.index(act_nums["read_value_2_0"])
+i_3 = stateful.index(act_nums["read_value_3_0"])
+i_4 = stateful.index(act_nums["read_value_4_0"])
+
+m.addConstr(quicksum(mem_vars[0])==quicksum(mem_vars[i_1]))
+m.addConstr(quicksum(mem_vars[0])==quicksum(mem_vars[i_2]))
+m.addConstr(quicksum(mem_vars[0])==quicksum(mem_vars[i_3]))
+m.addConstr(quicksum(mem_vars[0])==quicksum(mem_vars[i_4]))
 
 # how to split mem equally / ensure that one action doesn't get allocated all the memory??
 # do we need to account for this?
 
+#m.addConstr(quicksum(mem_vars[0]) == quicksum(mem_vars[1]))
+#m.addConstr(quicksum(mem_vars[1]) == quicksum(mem_vars[2]))
+
+meta_vars = []
+for met in range(len(meta)):
+	meta_vars.append([])
+	for me in meta[met]:
+		meta_vars[met].append(m.addVar(lb=0,vtype=GRB.BINARY,name="meta%s"%(me)))
+		m.addConstr(meta_vars[met][-1]==quicksum(a_vars[me]))
+
+m.addConstr(quicksum(meta_vars[0])*meta_per[0] + quicksum(meta_vars[1])*meta_per[1] <= phv) 
+
 
 # Objective to optimize
 # m.setObjective(quicksum(x for i in a_vars for x in i), GRB.MAXIMIZE)
-m.setObjective(quicksum(mem_vars), GRB.MAXIMIZE)
+#m.setObjective(quicksum(x for i in mem_vars for x in i), GRB.MAXIMIZE)
+
+m.setObjective(.75*quicksum(kv_mem_vars) + .25*quicksum(cms_mem_vars), GRB.MAXIMIZE)
 
 # Solve
 m.optimize()
 
+
+'''
+for a in a_vars:
+	for j in range(len(a)):
+		i = a[j]
+		if i.x == 1:
+			print "act: "+str(i.varName)+ "stg: "+str(j)
+			break
+'''
+
+'''
 # print all variable values
 for v in m.getVars():
         print('%s %g' % (v.varName, v.x))
+'''
+
+
+print("--- %s seconds ---" % (time.time() - start_time))
+
+# find way to print out cms vars and kv vars separate - get stages easier
+
+inv_map = {v: k for k, v in act_nums.iteritems()}
+
+for v in a_vars[0]:
+	if v.x == 1:
+		print "check_cache_valid: "+v.varName.replace("act"+str(act_nums["check_cache_valid"]),'')
+for v in a_vars[1]:
+        if v.x == 1:
+                print "set_cache_valid: "+v.varName.replace("act"+str(act_nums["set_cache_valid"]),'')
+for v in a_vars[act_nums["reply_read_hit_before"]]:
+        if v.x == 1:
+                print "reply_read_hit_before: "+v.varName.replace("act"+str(act_nums["reply_read_hit_before"]),'')
+for v in a_vars[-1]:
+        if v.x == 1:
+                print "reply_read_hit_after: "+v.varName.replace("act"+str(act_nums["reply_read_hit_after"]),'')
+i_c = 0
+for v in cms_vars:
+	t = cms_vars_nums[i_c]
+	i_c += 1
+	if v.x == 1:
+		print "cms: "+inv_map[t]+" "+v.varName.replace("act"+str(t),'')
+i_k = 0
+for v in kv_vars:
+	t = kv_vars_nums[i_k]
+	i_k += 1
+        if v.x == 1:
+                print "kv: "+inv_map[t]+" "+v.varName.replace("act"+str(t),'')
+
+cms_m_sum = 0
+for v in cms_mem_vars:
+	cms_m_sum += v.x
+kv_m_sum = 0
+for v in kv_mem_vars:
+	kv_m_sum += v.x
+
+print "CMS memory: "+str(cms_m_sum)
+print "KV memory: "+str(kv_m_sum)
+
+for v in cms_mem_vars:
+	if v.x > 0:
+		print "cms: "+v.varName+" "+str(v.x)
+
+for v in kv_mem_vars:
+	if v.x > 0:
+                print "kv: "+v.varName+" "+str(v.x)
+
+# print all variable values
+#for v in m.getVars():
+#        print('%s %g' % (v.varName, v.x))
+
+
 
 
 
