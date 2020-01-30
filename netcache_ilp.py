@@ -77,9 +77,9 @@ reg_bound = 256
 num_stg = 12
 # stateful actions per stg
 num_state = 4
-# phv left after const
+# phv left after const - 568
 phv = 3628
-# meta each action takes
+# meta each action takes - 80 for cms, 128 for kv
 meta_per = [80,128]
 
 start_time = time.time()
@@ -174,12 +174,24 @@ mem_vars = []
 stages_mem_vars = []
 cms_mem_vars = []
 kv_mem_vars = []
+cms_mem_nums = []
+kv_mem_nums = []
+cms_mem_vars_cons = []
+kv_mem_vars_cons = []
+cms_m_i = -1
+kv_m_i = -1
 for i in range(num_stg):
 	stages_mem_vars.append([])
 for l in stateful:
 	j = stateful.index(l)
 	stg_count = 0
 	mem_vars.append([])
+	if l > 0 and l < act_nums["read_value_1_0"]:
+		cms_mem_vars_cons.append([])
+		cms_m_i += 1
+	elif l >= act_nums["read_value_1_0"]:
+		kv_mem_vars_cons.append([])
+		kv_m_i += 1
 	for i in range(len(a_vars[l])):
 		mem_vars[j].append(m.addVar(lb=0,vtype=GRB.INTEGER,name="mem%s%s"%(l,stg_count)))
 		stages_mem_vars[i].append(mem_vars[j][-1])
@@ -188,10 +200,45 @@ for l in stateful:
 		stg_count += 1
 		if l > 0 and l < act_nums["read_value_1_0"]:
 			cms_mem_vars.append(mem_vars[j][-1])
-		else:
+			cms_mem_nums.append(l)
+			cms_mem_vars_cons[cms_m_i].append(mem_vars[j][-1])
+		elif l >= act_nums["read_value_1_0"]:
 			kv_mem_vars.append(mem_vars[j][-1])
+			kv_mem_nums.append(l)
+			kv_mem_vars_cons[kv_m_i].append(mem_vars[j][-1])
 for l in stages_mem_vars:
 	m.addConstr(quicksum(l) <= total_mem)			# memory allocated in each stg adheres to memory constraints
+
+#'''
+c = -1
+for me in cms_mem_vars_cons:
+	c += 1
+	if c == 0:
+		continue
+	m.addConstr(quicksum(me)*quicksum(a_vars[2])==quicksum(cms_mem_vars_cons[0])*quicksum(a_vars[2+c]))
+#'''
+c = -1
+add = 0
+for me in kv_mem_vars_cons:
+        c += 1
+        if c == 0:
+                continue
+	if c%4==0:
+		add += 1
+	add_i = (add*6)
+        m.addConstr(quicksum(me)*quicksum(a_vars[1205])==quicksum(kv_mem_vars_cons[0])*quicksum(a_vars[1205+c+add_i]))
+#'''
+#m.addConstr(quicksum(a_vars[4]) == 0)
+#m.addConstr(quicksum(cms_mem_vars_cons[2])==0)
+#m.addConstr(quicksum(cms_mem_vars_cons[1])*quicksum(a_vars[2])==quicksum(cms_mem_vars_cons[0])*quicksum(a_vars[3]))
+#m.addConstr(quicksum(cms_mem_vars_cons[2])*quicksum(a_vars[2])==quicksum(cms_mem_vars_cons[0])*quicksum(a_vars[4]))
+#m.addConstr(quicksum(cms_mem_vars_cons[3])*quicksum(a_vars[cms_mem_nums[0]])==quicksum(cms_mem_vars_cons[0])*quicksum(a_vars[cms_mem_nums[3]]))
+#m.addConstr(quicksum(cms_mem_vars_cons[4])*quicksum(a_vars[cms_mem_nums[0]])==quicksum(cms_mem_vars_cons[0])*quicksum(a_vars[cms_mem_nums[4]]))
+
+
+#m.addConstr(quicksum(cms_mem_vars_cons[-1])*quicksum(a_vars[cms_mem_nums[-2]])==quicksum(cms_mem_vars_cons[-2])*quicksum(a_vars[cms_mem_nums[-1]]))
+
+
 
 i_1 = stateful.index(act_nums["read_value_1_0"])
 i_2 = stateful.index(act_nums["read_value_2_0"])
@@ -223,7 +270,7 @@ m.addConstr(quicksum(meta_vars[0])*meta_per[0] + quicksum(meta_vars[1])*meta_per
 # m.setObjective(quicksum(x for i in a_vars for x in i), GRB.MAXIMIZE)
 #m.setObjective(quicksum(x for i in mem_vars for x in i), GRB.MAXIMIZE)
 
-m.setObjective(.75*quicksum(kv_mem_vars) + .25*quicksum(cms_mem_vars), GRB.MAXIMIZE)
+m.setObjective(.25*quicksum(kv_mem_vars) + .75*quicksum(cms_mem_vars), GRB.MAXIMIZE)
 
 # Solve
 m.optimize()
@@ -257,6 +304,10 @@ for v in a_vars[0]:
 for v in a_vars[1]:
         if v.x == 1:
                 print "set_cache_valid: "+v.varName.replace("act"+str(act_nums["set_cache_valid"]),'')
+for v in mem_vars[0]:
+	if v.x > 0:
+		print "Valid memory: "+str(v.x)
+
 for v in a_vars[act_nums["reply_read_hit_before"]]:
         if v.x == 1:
                 print "reply_read_hit_before: "+v.varName.replace("act"+str(act_nums["reply_read_hit_before"]),'')
