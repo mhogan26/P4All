@@ -1,0 +1,236 @@
+typedef bit<48> macAddr_t;
+typedef bit<32> ip4Addr_t;
+symbolic int num_snap;
+symbolic int SNAP_CBF_SIZE;
+header ethernet_t {
+    macAddr_t dstAddr;
+    macAddr_t srcAddr;
+    bit<16>   etherType;
+}
+header ipv4_t {
+    bit<4>    version;
+    bit<4>    ihl;
+    bit<8>    diffserv;
+    bit<16>   totalLen;
+    bit<16>   identification;
+    bit<3>    flags;
+    bit<13>   fragOffset;
+    bit<8>    ttl;
+    bit<8>    protocol;
+    bit<16>   hdrChecksum;
+    ip4Addr_t srcAddr;
+    ip4Addr_t dstAddr;
+}
+
+header tcp_t {
+    bit<16>   srcPort;
+    bit<16>   dstPort;
+    bit<32>   seqNo;
+    bit<32>   ackNo;
+    bit<4>    dataOffset;
+    bit<3>    res;
+    bit<3>    ecn;
+    bit<6>    ctrl;
+    bit<16>   window;
+    bit<16>   checksum;
+    bit<16>   urgentPtr;
+}
+header udp_t {
+    bit<16>   srcPort;
+    bit<16>   dstPort;
+    bit<16>   hdr_length;
+    bit<16>   checksum;
+}
+struct snaps {
+    bit<32> status_s;
+}
+
+struct result {
+    bit<32> read_result_s_r_0;
+    bit<32> read_result_s_r_1;
+}
+struct addr {
+    bit<32> addr_s_r_0;
+    bit<32> addr_s_r_1;
+}
+struct min {
+    bit<32> read_min_s;
+}
+
+struct custom_metadata_t {
+    bit<16>   my_flowid_hashed_1;
+    bit<16>   my_flowid_hashed_2;
+    bit<32>           global_pkt_count;
+    bit<SNAP_CBF_SIZE_BITS>            cyclic_clean_idx;
+    bit<32>            hash_addr_r_0;
+    bit<32>            hash_addr_r_1;
+    bit<4>    enq_qdepth_scaled_down: 4;
+    addrs[num_snaps]	addrs;
+    result[num_snaps]	results;
+    min[num_snaps]	mins;
+    bit<32>            read_result_sum_p1;
+    bit<32>            read_result_sum_p2;
+    bit<32>            read_result_sum;
+    snaps[num_snaps]	status
+    bit<2>                current_pktcount_scaled_down_SIT;
+}
+
+struct headers {
+    ethernet_t   ethernet;
+    ipv4_t       ipv4;
+    tcp_t        tcp;
+    udp_t        udp;
+}
+
+#define IP_PROTOCOLS_TCP 6
+#define IP_PROTOCOLS_UDP 17
+parser MyParser () {
+state start {
+    return parse_ethernet;
+}
+state parse_ethernet {
+    extract(ethernet);
+    return select(latest.etherType) {
+        0x800 : parse_ipv4;
+        default: ingress;
+    }
+}
+state parse_ipv4 {
+    extract(ipv4);
+    return select(latest.fragOffset, latest.protocol) {
+        IP_PROTOCOLS_TCP : parse_tcp;
+        IP_PROTOCOLS_UDP : parse_udp;
+        default: ingress;
+    }
+}
+start parse_tcp {
+    extract(tcp);
+    return ingress;
+}
+start parse_udp {
+    extract(udp);
+    return select(latest.dstPort) {
+        default: ingress;
+    }
+}
+}
+
+#define SNAP_PKT_INTERVAL 4096
+#define SNAP_PKT_INTERVAL_BITS 12
+#define STATUS_CLEAN 3
+#define STATUS_WRITE 0
+#define STATUS_READ_1 1
+#define STATUS_READ_2 2
+
+// ===== Prepare addresses =====
+control MyVerifyChecksum(){
+apply {}
+}
+
+/* Main control flow */
+control MyIngress {
+}
+#define RUN_ON_PORT 180
+control MyEgress {
+register<bit<32>>(16) global_pkt_counter;
+register<bit<32>>(SNAP_CBF_SIZE) snap_s_r_0;
+register<bit<32>>(SNAP_CBF_SIZE) snap_s_r_1;
+snap_s_r_0[num_snap] reg_r0;
+snap_s_r_1[num_snap] reg_r1;
+
+action prepare_snap_status_2()[int i]{
+	add_to_field(meta.status[i].status_s, i);
+}
+action copy_addr_r_0() {
+        // A CROSS-CONTAINER COPY.
+        modify_field_with_hash_based_offset(meta.hash_addr_r_0, 0,copy_addr_1_calc,SNAP_CBF_SIZE);
+}
+action copy_addr_r_1() {
+        modify_field_with_hash_based_offset(meta.hash_addr_r_1, 0,copy_addr_2_calc,SNAP_CBF_SIZE);
+}
+action init_reads_to_zero()[int i] {
+        modify_field(meta.results[i].read_result_s_r_0, 0);
+        modify_field(meta.results[i].read_result_s_r_1, 0);
+}
+action prepare_snap_how_many_to_read(){
+        shift_right(meta.enq_qdepth_scaled_down, eg_intr_meta.enq_qdepth, SNAP_PKT_INTERVAL_BITS);
+}
+
+action collect_sum_all(){
+        add(meta.read_result_sum,meta.read_result_sum_p1,meta.read_result_sum_p2);
+}
+
+action choose_addr_s_clean()[int i] {
+        modify_field(meta.addrs[i].addr_s_r_0,meta.cyclic_clean_idx);
+        modify_field(meta.addrs[i].addr_s_r_1,meta.cyclic_clean_idx);
+}
+action choose_addr_s_regular()[int i] {
+        modify_field(meta.addrs[i].addr_s_r_0, meta.hash_addr_r_0);
+        modify_field(meta.addrs[i].addr_s_r_1, meta.hash_addr_r_1);
+}
+
+action snap_s_r_0_clean()[int i] {
+	reg_r0[i].write(meta.addrs[i].addr_s_r_0);
+}
+action snap_s_r_1_clean()[int i] {
+        reg_r1[i].write(meta.addrs[i].addr_s_r_1);
+}
+action snap_s_r_0_write()[int i] {
+	reg_r0[i].write(meta.addrs[i].addr_s_r_0);
+}
+action snap_s_r_1_write()[int i] {
+        reg_r1[i].write(meta.addrs[i].addr_s_r_1);
+}
+action snap_s_r_0_read()[int i] {
+	reg_r0[i].read(meta.addrs[i].addr_s_r_0, meta.results.read_result_s_r_0);
+}
+action snap_s_r_1_read()[int i] {
+        reg_r1[i].read(meta.addrs[i].addr_s_r_1, meta.results.read_result_s_r_1);
+}
+
+     apply {
+	for (i < num_snap) {
+		prepare_snap_status_2()[i];
+	}
+
+        copy_addr_r_0();
+        copy_addr_r_1();
+
+	for ( i < num_snap) {
+		init_reads_to_zero()[i];
+	}
+
+        // Start the real snappy!
+	for (i < num_snap) {
+		if (meta.status[i].status_s != STATUS_CLEAN) {
+			choose_addr_s_regular()[i];
+		}
+		else {
+			choose_addr_s_clean()[i];
+		}
+
+	} 
+
+	for (i < num_snap) {
+		if (meta.status[i].status_s == STATUS_CLEAN) {
+			snap_s_r_0_clean()[i];
+			snap_s_r_1_clean()[i];
+		}
+		else if (meta.status[i].status_s == STATUS_WRITE) {
+			snap_s_r_0_write()[i];
+                        snap_s_r_1_write()[i];
+		}
+		else if (meta.status[i].status_s == STATUS_READ_1 and meta.enq_qdepth_scaled_down != 0){
+                        snap_s_r_0_read()[i];
+                        snap_s_r_1_read()[i];
+		}
+		else if (meta.status[i].status_s == STATUS_READ_2 and meta.enq_qdepth_scaled_down != 0 and meta.enq_qdepth_scaled_down != 1){
+                        snap_s_r_0_read()[i];
+                        snap_s_r_1_read()[i];
+		}
+
+	}        
+
+        collect_sum_all();
+	}
+}

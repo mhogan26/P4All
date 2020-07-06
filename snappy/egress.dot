@@ -1,0 +1,71 @@
+digraph egress {
+prepare_snap_status_2_0 -> choose_addr_s_regular_0 [color=blue label="nc_hdr.op" decorate=true]; 
+prepare_snap_status_2_0 -> choose_addr_s_clean_0 [color=blue label="nc_hdr.op" decorate=true];
+
+prepare_snap_status_2_1 -> choose_addr_s_regular_1 [color=blue label="nc_hdr.op" decorate=true];
+prepare_snap_status_2_1 -> choose_addr_s_clean_1 [color=blue label="nc_hdr.op" decorate=true];
+
+prepare_snap_status_2_0 -> snap_s_r_0_clean_0 [color=blue label="nc_hdr.op" decorate=true];
+prepare_snap_status_2_0 -> snap_s_r_1_clean_0 [color=blue label="nc_hdr.op" decorate=true];
+
+prepare_snap_status_2_0 -> snap_s_r_0_write_0 [color=blue label="nc_hdr.op" decorate=true];
+prepare_snap_status_2_0 -> snap_s_r_1_write_0 [color=blue label="nc_hdr.op" decorate=true];
+
+prepare_snap_status_2_0 -> snap_s_r_0_read_0 [color=blue label="nc_hdr.op" decorate=true];
+prepare_snap_status_2_0 -> snap_s_r_1_read_0 [color=blue label="nc_hdr.op" decorate=true];
+
+prepare_snap_status_2_1 -> snap_s_r_0_clean_1 [color=blue label="nc_hdr.op" decorate=true];
+prepare_snap_status_2_1 -> snap_s_r_1_clean_1 [color=blue label="nc_hdr.op" decorate=true];
+
+prepare_snap_status_2_1 -> snap_s_r_0_write_1 [color=blue label="nc_hdr.op" decorate=true];
+prepare_snap_status_2_1 -> snap_s_r_1_write_1 [color=blue label="nc_hdr.op" decorate=true];
+
+prepare_snap_status_2_1 -> snap_s_r_0_read_1 [color=blue label="nc_hdr.op" decorate=true];
+prepare_snap_status_2_1 -> snap_s_r_1_read_1 [color=blue label="nc_hdr.op" decorate=true];
+
+
+init_reads_to_zero_0 -> snap_s_r_0_read_0 [color=blue label="nc_hdr.op" decorate=true];
+init_reads_to_zero_0 -> snap_s_r_1_read_0 [color=blue label="nc_hdr.op" decorate=true];
+
+init_reads_to_zero_1 -> snap_s_r_0_read_1 [color=blue label="nc_hdr.op" decorate=true];
+init_reads_to_zero_1 -> snap_s_r_1_read_1 [color=blue label="nc_hdr.op" decorate=true];
+
+
+choose_addr_s_regular_0 -> snap_s_r_0_clean_0 [color=blue label="nc_hdr.op" decorate=true];
+choose_addr_s_regular_0 -> snap_s_r_1_clean_0 [color=blue label="nc_hdr.op" decorate=true];
+
+choose_addr_s_regular_0 -> snap_s_r_0_write_0 [color=blue label="nc_hdr.op" decorate=true];
+choose_addr_s_regular_0 -> snap_s_r_1_write_0 [color=blue label="nc_hdr.op" decorate=true];
+
+choose_addr_s_regular_0 -> snap_s_r_0_read_0 [color=blue label="nc_hdr.op" decorate=true];
+choose_addr_s_regular_0 -> snap_s_r_1_read_0 [color=blue label="nc_hdr.op" decorate=true];
+
+choose_addr_s_regular_1 -> snap_s_r_0_clean_1 [color=blue label="nc_hdr.op" decorate=true];
+choose_addr_s_regular_1 -> snap_s_r_1_clean_1 [color=blue label="nc_hdr.op" decorate=true];
+
+choose_addr_s_regular_1 -> snap_s_r_0_write_1 [color=blue label="nc_hdr.op" decorate=true];
+choose_addr_s_regular_1 -> snap_s_r_1_write_1 [color=blue label="nc_hdr.op" decorate=true];
+
+choose_addr_s_regular_1 -> snap_s_r_0_read_1 [color=blue label="nc_hdr.op" decorate=true];
+choose_addr_s_regular_1 -> snap_s_r_1_read_1 [color=blue label="nc_hdr.op" decorate=true];
+
+choose_addr_s_clean_0 -> snap_s_r_0_clean_0 [color=blue label="nc_hdr.op" decorate=true];
+choose_addr_s_clean_0 -> snap_s_r_1_clean_0 [color=blue label="nc_hdr.op" decorate=true];
+
+choose_addr_s_clean_0 -> snap_s_r_0_write_0 [color=blue label="nc_hdr.op" decorate=true];
+choose_addr_s_clean_0 -> snap_s_r_1_write_0 [color=blue label="nc_hdr.op" decorate=true];
+
+choose_addr_s_clean_0 -> snap_s_r_0_read_0 [color=blue label="nc_hdr.op" decorate=true];
+choose_addr_s_clean_0 -> snap_s_r_1_read_0 [color=blue label="nc_hdr.op" decorate=true];
+
+choose_addr_s_clean_1 -> snap_s_r_0_clean_1 [color=blue label="nc_hdr.op" decorate=true];
+choose_addr_s_clean_1 -> snap_s_r_1_clean_1 [color=blue label="nc_hdr.op" decorate=true];
+
+choose_addr_s_clean_1 -> snap_s_r_0_write_1 [color=blue label="nc_hdr.op" decorate=true];
+choose_addr_s_clean_1 -> snap_s_r_1_write_1 [color=blue label="nc_hdr.op" decorate=true];
+
+choose_addr_s_clean_1 -> snap_s_r_0_read_1 [color=blue label="nc_hdr.op" decorate=true];
+choose_addr_s_clean_1 -> snap_s_r_1_read_1 [color=blue label="nc_hdr.op" decorate=true];
+
+
+}
