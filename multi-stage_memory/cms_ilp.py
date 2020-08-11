@@ -108,16 +108,6 @@ for g in groups:
 			m.addConstr(quicksum(act_vars[a1])*quicksum(act_vars[a2])>=quicksum(act_vars[a1]))
 
 #'''
-'''
-# add constraint that makes solution ordered - higher values won't = 1 if lower values = 0
-# sum of act_var lists <= sum of higher index act_var lists
-# do we really want to enforce this? is there a situation where we wouldn't?
-for l in loops:
-	for i in range(len(l)):
-		if i == 0:
-			continue
-		m.addConstr(quicksum(act_vars[l[i]]) <= quicksum(act_vars[l[i-1]]))
-'''
 
 # dependency constraints
 for key in deps:
@@ -136,6 +126,20 @@ for key in deps:
 		for x in range(len(act_vars[a0])):
 			m.addConstr(act_vars[a0][x] == act_vars[a1][x])
 
+# constraint for actions outside loop (non-symbolic actions) - they MUST get placed or we fail compilation
+for l in loops:		# loops is a misnomer, it contains ALL actions, but groups actions in the same loop together
+	if len(l) == 1:	# action isn't in a symbolic loop (or the upper bound of the loop = 1)
+		m.addConstr(quicksum(a_vars[l[0]]) >= 1)
+	else:
+	# add constraint that makes solution ordered - higher values won't = 1 if lower values = 0
+	# sum of act_var lists <= sum of higher index act_var lists
+	# do we really want to enforce this? is there a situation where we wouldn't?
+		for i in range(len(l)):
+			if i == 0:
+				continue
+			m.addConstr(quicksum(act_vars[l[i]])*quicksum(act_vars[l[i-1]])>=quicksum(act_vars[l[i]]))
+			# old, without multi-stage arrays:
+			#m.addConstr(quicksum(a_vars[l[i]]) <= quicksum(a_vars[l[i-1]]))
 #'''
 # memory constraint - regsiter arrays in SRAM
 # one memory var for every stg, STATEFUL action (same as decision vars for actions)
