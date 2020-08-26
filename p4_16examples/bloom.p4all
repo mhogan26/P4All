@@ -1,0 +1,125 @@
+/* ethernet, ipv4 headers, parsing, routing functions */
+
+/* this is a membership bloom filter */
+/* this DOES NOT include any querying logic; it only updates the filter */
+/* it is trivial to add the querying functions - similar to CMS */
+
+
+/* this is one of many ways to write a bloom filter */
+/* this implementation requires each hash function to be in the same stage - bc they access the same reg array */
+/* the programmer could have separate reg arrays (of equal sizes) for each hash function to avoid this */
+
+#include "core.p4"
+#include "v1model.p4"
+
+
+symbolic int bits;
+symbolic int hashes;
+
+typedef bit<32> ip4Addr_t;
+
+header ipv4_t {
+    bit<4>    version;
+    bit<4>    ihl;
+    bit<8>    diffserv;
+    bit<16>   totalLen;
+    bit<16>   identification;
+    bit<3>    flags;
+    bit<13>   fragOffset;
+    bit<8>    ttl;
+    bit<8>    protocol;
+    bit<16>   hdrChecksum;
+    ip4Addr_t srcAddr;
+    ip4Addr_t dstAddr;
+}
+
+struct headers { 
+    ipv4_t       ipv4;
+}
+
+struct bloom_meta_t {
+	bit<32> index;
+        bit<1> member;
+}
+
+struct custom_metadata_t {
+	bloom_meta_t[hashes] bloom_meta;
+}
+
+
+parser MyParser(packet_in packet, out headers hdr, inout custom_metadata_t meta, inout standard_metadata_t standard_metadata) {
+        state start {
+                transition parse_ipv4;
+        }
+        state parse_ipv4 {
+                packet.extract(hdr.ipv4);
+                transition accept;
+        }
+}
+
+control MyVerifyChecksum(inout headers hdr, inout custom_metadata_t meta) {
+        apply { }
+}
+
+
+#define HASH_BASE 10w0
+#define HASH_MAX 10w1023
+
+control MyIngress(inout headers hdr,
+                  inout custom_metadata_t meta,
+                  inout standard_metadata_t standard_metadata) {
+
+        register<bit<1>>(bits) bloom;
+
+	// we'd need to populate this with values, leaving empty for now
+	salts = [];
+
+	action hash()[int i] {
+		/* compute hash index */
+		hash(meta.bloom_meta[i].index, HashAlgorithm.crc16, HASH_BASE,
+			{hdr.ipv4.srcAddr, hdr.ipv4.dstAddr, hdr.ipv4.protocol, salts[i]}, HASH_MAX);
+
+		/* set bit to 1 */
+		bloom.read(meta.bloom_meta[i].member, meta.bloom_meta[i].index);
+		meta.bloom_meta[i].member = 1;
+		bloom.write(meta.bloom_meta[i].index, meta.bloom_meta[i].member);
+	}
+
+	apply {
+		for (i < hashes) {
+			hash()[i];
+		}
+	}
+
+        /* apply forwarding logic */
+
+}
+
+
+
+control MyEgress(inout headers hdr, inout custom_metadata_t meta, inout standard_metadata_t standard_metadata) {
+        apply { }
+}
+
+control MyComputeChecksum(inout headers hdr, inout custom_metadata_t meta) {
+        apply { }
+}
+
+control MyDeparser(packet_out packet, in headers hdr) {
+        apply {
+                packet.emit(hdr.ipv4);
+        }
+}
+
+
+
+V1Switch(
+MyParser(),
+MyVerifyChecksum(),
+MyIngress(),
+MyEgress(),
+MyComputeChecksum(),
+MyDeparser()
+) main;
+
+
