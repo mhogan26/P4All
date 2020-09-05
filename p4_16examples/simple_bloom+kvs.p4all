@@ -1,0 +1,156 @@
+/* this is a simple example of a bloom filter + key value store */
+/* this does NOT include any forwarding logic, nor any logic to query the data structures */
+
+#include "core.p4"
+#include "v1model.p4"
+
+symbolic int KVS_ITEMS;
+symbolic int BLOOM_BITS;
+symbolic int BLOOM_HASHES;
+
+
+/* kvs utility -- sum from 1 to KVS_ITEMS of 1/x^alpha, where alpha is workload-dependent parameter describing distribution (in this case, alpha = 1) */
+utility KVS_UTIL = sum(x=1,KVS_ITEMS,1/x^1)
+/* bloom utility -- workload dependent parameter is number of items inserted into the filter (in this case, 100) */
+utility BLOOM_UTIL = (1-e^(-BLOOM_HASHES*100/BLOOM_BITS))^BLOOM_HASHES where 1<BLOOM_HASHES<5
+
+optimize(0.6*KVS_UTIL+0.4*BLOOM_UTIL);
+
+typedef bit<32> ip4Addr_t;
+
+header ipv4_t {
+    bit<4>    version;
+    bit<4>    ihl;
+    bit<8>    diffserv;
+    bit<16>   totalLen;
+    bit<16>   identification;
+    bit<3>    flags;
+    bit<13>   fragOffset;
+    bit<8>    ttl;
+    bit<8>    protocol;
+    bit<16>   hdrChecksum;
+    ip4Addr_t srcAddr;
+    ip4Addr_t dstAddr;
+}
+
+header kvs_value_t {
+    bit<32>   cache_index;
+    bit<32>   value;
+}
+
+struct bloom_meta_t {
+	bit<32> index;
+        bit<1> member;
+}
+
+struct custom_metadata_t {
+	bloom_meta_t[BLOOM_HASHES] bloom_meta;
+}
+
+struct headers {
+    ipv4_t       ipv4;
+    kvs_value_t   kvs_value;
+}
+
+
+parser MyParser(packet_in packet,
+                out headers hdr,
+                inout custom_metadata_t meta,
+                inout standard_metadata_t standard_metadata) {
+
+    state start {
+        transition parse_ipv4;
+    }
+    state parse_ipv4 {
+        packet.extract(hdr.ipv4);
+	transition parse_value;
+    }
+    state parse_value {
+	packet.extract(hdr.kvs_value);
+	transition accept;
+    }
+
+}
+
+
+control MyVerifyChecksum(inout headers hdr, inout custom_metadata_t meta) {
+    apply {  }
+}
+
+control MyIngress(inout headers hdr,
+                  inout custom_metadata_t meta,
+                  inout standard_metadata_t standard_metadata) {
+
+    apply {
+
+    }
+}
+
+
+#define HASH_BASE 10w0
+#define HASH_MAX 10w1023
+
+control MyEgress(inout headers hdr, inout custom_metadata_t meta, inout standard_metadata_t standard_metadata) {
+
+
+   /* KEY VALUE STORE */
+   register<bit<32>>(KVS_ITEMS)  key_value_regs;
+
+   action remove_value_header() {
+        hdr.ipv4.totalLen = hdr.ipv4.totalLen - 16;
+	hdr.kvs_value.setInvalid();
+   }
+
+   action write_kvs() {
+	 /* write header value into kvs */
+         key_value_regs.write(hdr.kvs_value.cache_index, hdr.kvs_value.value);
+   }
+
+   /* BLOOM FILTER */
+   register<bit<1>>(BLOOM_BITS)[BLOOM_HASHES] bloom_arrays;
+
+   // the length of this array would upper bound BLOOM_HASHES
+   bloom_hash_salts = [7w11, 5w3, 3w5]
+
+   action bloom_hash()[int i] {
+           hash(meta.bloom_meta[i].index, HashAlgorithm.crc16, HASH_BASE,
+                 {hdr.ipv4.srcAddr, hdr.ipv4.dstAddr, hdr.ipv4.protocol, bloom_hash_salts[i]}, HASH_MAX);
+
+ 	    /* set bit to 1 */
+            meta.bloom_meta[i].member = 1;
+	    bloom_arrays[i].write(meta.bloom_meta[i].index, meta.bloom_meta[i].member);
+    }
+
+
+    apply {
+	/* KVS */
+	write_kvs();
+        remove_value_header();
+
+	/* BLOOM */
+	for (i < BLOOM_HASHES) {
+		bloom_hash()[i];
+	}
+    }
+}
+
+
+control MyComputeChecksum(inout headers hdr, inout custom_metadata_t meta) {
+        apply { }
+}
+
+control MyDeparser(packet_out packet, in headers hdr) {
+        apply {
+                packet.emit(hdr.ipv4);
+        }
+}
+
+V1Switch(
+MyParser(),
+MyVerifyChecksum(),
+MyIngress(),
+MyEgress(),
+MyComputeChecksum(),
+MyDeparser()
+) main;
+
