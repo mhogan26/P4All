@@ -89,10 +89,10 @@ control MyIngress(inout headers hdr,
                 hash(meta.index1, HashAlgorithm.crc16, HASH_BASE,
                       {hdr.ipv4.srcAddr, hdr.ipv4.dstAddr, hdr.ipv4.protocol, 3w5}, HASH_MAX);
 
-                bloom2.read(meta.member1, meta.index1);
+                bloom2.read(meta.member2, meta.index2);
                 meta.member1 = 1;
 
-                bloom2.write(meta.index1,meta.member1);
+                bloom2.write(meta.index2,meta.member2);
         }
 
         apply {
