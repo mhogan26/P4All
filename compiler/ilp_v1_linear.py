@@ -5,6 +5,8 @@ import ast
 import sys
 
 
+# FIX LOOPS CONSTRAINT - DON'T ENFORCE ORDERED?
+# or will have to add something to input that groups nums of SAME symbolic act together (not just acts in same loop)
 
 # THIS IS THE MOST BASIC VERSION OF ILP - 
 # does not allow for PWL utilities (only linear expressions)
@@ -177,7 +179,7 @@ for l in loops:		# loops is a misnomer, it contains ALL actions, but groups acti
 	if len(l) == 1:	# action isn't in a symbolic loop (or the upper bound of the loop = 1)
 		m.addConstr(quicksum(act_vars[l[0]]) >= 1)
 		required.append(l[0])
-	else:
+	else:	 # THIS IS WRONG!!!! Won't work if mult actions in same loop
 	# add constraint that makes solution ordered - higher values won't = 1 if lower values = 0
 	# sum of act_var lists <= sum of higher index act_var lists
 	# do we really want to enforce this? is there a situation where we wouldn't?
