@@ -77,6 +77,8 @@ hash_acts = list(map(int, prog_info[10].split()))
 same_size = [ast.literal_eval(x) for x in prog_info[12].split()]
 # LINEAR utility function
 util_func = prog_info[13]
+# size of the non-symbolic (required) phv
+req_phv = int(prog_info[14])
 
 
 switch_info = []
@@ -94,7 +96,7 @@ num_stg = switch_info[1]
 # stateful actions per stg
 num_state = switch_info[2]
 # phv
-phv = switch_info[3]
+phv = switch_info[3] - req_phv
 # TCAM per stg
 tcam = switch_info[4]
 # size of item stored in tcam
@@ -327,14 +329,11 @@ for l in stages_tcam_vars:              # tcam adheres to constraints
 
 #'''
 # phv constraint
+# note that phv corresponds to the remaining phv AFTER the required (non-symbolic) fields are accounted for
 # meta variables correspond to act_vars
 # not totally sure the constraint here will work for all cases - when action isn't placed, meta could still = 1
 # ^ how????? is this still true???
 # TEST THIS
-
-
-# THIS IS WRONG!!! what if same meta used in mult actions?
-# we have to make sure we're only counting meta once
 meta_vars = []
 #bloom_meta_vars = []
 for met in meta:
