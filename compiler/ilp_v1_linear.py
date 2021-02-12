@@ -331,6 +331,10 @@ for l in stages_tcam_vars:              # tcam adheres to constraints
 # not totally sure the constraint here will work for all cases - when action isn't placed, meta could still = 1
 # ^ how????? is this still true???
 # TEST THIS
+
+
+# THIS IS WRONG!!! what if same meta used in mult actions?
+# we have to make sure we're only counting meta once
 meta_vars = []
 #bloom_meta_vars = []
 for met in meta:
