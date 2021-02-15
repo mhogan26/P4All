@@ -77,9 +77,12 @@ hash_acts = list(map(int, prog_info[10].split()))
 same_size = [ast.literal_eval(x) for x in prog_info[12].split()]
 # LINEAR utility function
 util_func = prog_info[13]
+
+#TODO: ADD THESE TO INPUT
 # size of the non-symbolic (required) phv
 req_phv = int(prog_info[14])
-
+# num instances for regs (if = -1, then symbolic)
+reg_inst = list(map(int, prog_info[15].split()))
 
 switch_info = []
 with open(sys.argv[2],'r') as f:
@@ -218,9 +221,11 @@ for l in stateful:
 	for i in range(len(act_vars[l])):
 		mem_vars[j].append(m.addVar(lb=0,ub=total_mem/item_size[j],vtype=GRB.INTEGER,name="mem%s_%s"%(l,stg_count)))
 		stages_mem_vars[i].append(mem_vars[j][-1])
-		m.addConstr(mem_vars[j][-1]*item_size[j] <= act_vars[l][i]*total_mem)	# actions not allocated have 0 memory
-		m.addConstr(mem_vars[j][-1]*item_size[j] >= act_vars[l][i])		# actions in stgs have nonzero memory allocation
-
+		if reg_inst[j]==-1:	# reg has symbolic size
+			m.addConstr(mem_vars[j][-1]*item_size[j] <= act_vars[l][i]*total_mem)	# actions not allocated have 0 memory
+			m.addConstr(mem_vars[j][-1]*item_size[j] >= act_vars[l][i])		# actions in stgs have nonzero memory allocation
+		else:
+			m.addConstr(mem_vars[j][-1]==reg_inst[j])	# the reg isn't symbolic, so we require that we allocate mem for it
 		stg_count += 1
 
 	# j is the index we care about?
