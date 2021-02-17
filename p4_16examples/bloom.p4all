@@ -14,7 +14,7 @@
 
 
 symbolic int bits;
-symbolic int hashes;
+symbolic int hashes [1..10];
 
 typedef bit<32> ip4Addr_t;
 
@@ -44,21 +44,6 @@ struct bloom_meta_t {
 
 struct custom_metadata_t {
 	bloom_meta_t[hashes] bloom_meta;
-}
-
-
-parser MyParser(packet_in packet, out headers hdr, inout custom_metadata_t meta, inout standard_metadata_t standard_metadata) {
-        state start {
-                transition parse_ipv4;
-        }
-        state parse_ipv4 {
-                packet.extract(hdr.ipv4);
-                transition accept;
-        }
-}
-
-control MyVerifyChecksum(inout headers hdr, inout custom_metadata_t meta) {
-        apply { }
 }
 
 
@@ -96,30 +81,17 @@ control MyIngress(inout headers hdr,
 }
 
 
-
-control MyEgress(inout headers hdr, inout custom_metadata_t meta, inout standard_metadata_t standard_metadata) {
-        apply { }
+minimize bloom_util {
+	switch bits{
+		case 0 {
+			scale(1)
+		}
+		default {
+			(1 - math.exp(-float(hashes)*float(100)/float(bits)))**float(hashes)
+		}
+	}
+	step 10
 }
 
-control MyComputeChecksum(inout headers hdr, inout custom_metadata_t meta) {
-        apply { }
-}
-
-control MyDeparser(packet_out packet, in headers hdr) {
-        apply {
-                packet.emit(hdr.ipv4);
-        }
-}
-
-
-
-V1Switch(
-MyParser(),
-MyVerifyChecksum(),
-MyIngress(),
-MyEgress(),
-MyComputeChecksum(),
-MyDeparser()
-) main;
-
+optimize bloom_util;
 
