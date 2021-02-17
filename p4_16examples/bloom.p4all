@@ -87,7 +87,7 @@ minimize bloom_util {
 			scale(1)
 		}
 		default {
-			(1 - math.exp(-float(hashes)*float(100)/float(bits)))**float(hashes)
+			scale((1 - math.exp(-float(hashes)*float(100)/float(bits)))**float(hashes))
 		}
 	}
 	step 10
