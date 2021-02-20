@@ -89,15 +89,16 @@ control MyIngress(inout headers hdr,
 }
 
 minimize cms_util {
-	switch cols {
-		case 0 {
-			scale(1)
-		}
-		default {
-			float(3)/float(cols)
-		}
-	}
-	step 2
+	function:
+		switch cols {
+			case 0 {
+				scale(1)
+			}
+			default {
+				scale(float(3)/float(cols))
+			}
+		};
+	step: 2;
 }
 
 
