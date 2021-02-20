@@ -86,15 +86,16 @@ control MyEgress(inout headers hdr, inout custom_metadata_t meta, inout standard
 
 
 maximize kvs_util {
-	switch kv_items {
-		case 0 {
-			scale(-1)
-		}
-		default {
-			scale(sum(1,kv_items,1/x))
-		}
-	}
-	step 10;
+	function:
+		switch kv_items {
+			case 0 {
+				scale(-1)
+			}
+			default {
+				scale(sum(map(lambda x: 1/x,range(1,kv_items))))
+			}
+		};
+	step: 10;
 
 }
 
