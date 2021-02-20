@@ -82,15 +82,16 @@ control MyIngress(inout headers hdr,
 
 
 minimize bloom_util {
-	switch bits{
-		case 0 {
-			scale(1)
-		}
-		default {
-			scale((1 - math.exp(-float(hashes)*float(100)/float(bits)))**float(hashes))
-		}
-	}
-	step 10
+	function:
+		switch bits{
+			case 0 {
+				scale(1)
+			}
+			default {
+				scale((1 - math.exp(-float(hashes)*float(100)/float(bits)))**float(hashes))
+			}
+		};
+	step: 10;
 }
 
 optimize bloom_util;
