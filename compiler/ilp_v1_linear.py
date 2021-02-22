@@ -75,14 +75,18 @@ utility_incl = int(prog_info[9])
 hash_acts = list(map(int, prog_info[10].split()))
 # list of stateful(?) actions that share the same symbolic (must be the same size)
 same_size = [ast.literal_eval(x) for x in prog_info[12].split()]
-# LINEAR utility function
-util_func = prog_info[13]
-
-#TODO: ADD THESE TO INPUT
 # size of the non-symbolic (required) phv
-req_phv = int(prog_info[14])
+req_phv = int(prog_info[13])
 # num instances for regs (if = -1, then symbolic)
-reg_inst = list(map(int, prog_info[15].split()))
+reg_inst = list(map(int, prog_info[14].split()))
+# "mem" or "act" - tells us if util corresponds to memory or action ILP vars
+util_var_type = prog_info[15]
+# nums corresponding to ILP vars that we use in PWL util
+util_var_nums = list(map(int, prog_info[16].split()))
+# x vals - possible vals for ILP vars
+util_x_vals = list(map(int, prog_info[17].split()))
+# y vals - util corresponding to each possible x val
+util_y_vals = list(map(int, prog_info[18].split()))
 
 switch_info = []
 with open(sys.argv[2],'r') as f:
