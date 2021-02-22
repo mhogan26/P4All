@@ -23,6 +23,7 @@
 # CHECK TODOs IN CODE
 # error checking for python code???
 
+# ADD CASES WHERE WE CREATE MULT INSTANCES OF ILP AND PICK BEST (bloom filter)
 # FIX PARSING TO WORK FOR UTILS W/O SWITCH STMTS
 # UPDATE PARSING TO SUPPORT MULTIPLE UTIL FUNCS DEFINED
 # ADD HEADER FIELDS TO META SIZE SECTION
@@ -942,10 +943,49 @@ for v in x_vals:
 			y_vals.append(y_v)
 		continue
 
-print y_vals
+#print y_vals
+
+with open("ilp_input.txt", "w") as f:
+	f.writelines("%s " % s for s in ilp_stateful)		# numbers of acts that are stateful
+	f.write("\n")
+	f.writelines("%s " % m for m in ilp_meta)		# numbers of acts that use symbolic meta
+        f.write("\n")
+        f.writelines("%s " % ms for ms in ilp_meta_sizes)	# sizes of each instance of symbolic meta (corresponding to act nums)
+        f.write("\n")	
+	f.writelines("%s " % g for g in ilp_groups)		# nums of acts in groups (acts that must ALL be placed - all or nothing)
+	f.write("\n")
+	f.writelines("%s " % l for l in ilp_loops)		# nums of acts in the same loop (not in loop - in list by itself)
+	f.write("\n")
+	f.write(str(ilp_deps))					# list of deps
+	f.write("\n")
+	# TODO: TCAM ACT NUMS
+	# TODO: TCAM SIZES
+	f.writelines("%s " % rw for rw in ilp_reg_width)	# width of each reg array (corresponding to stateful act nums)
+	f.write("\n")
+	f.write("1")						# utililty provided? TODO: get rid of this
+	f.write("\n")	
+	f.writelines("%s " % h for h in ilp_hashes) 		# nums of acts that hash
+	f.write("\n")
+	f.write(str(act_num))					# total number of acts we have
+	f.write("\n")
+	f.writelines("%s " % ss for ss in ilp_same_size)	# list of reg arrays that must have same num of instances
+	f.write("\n")
+	f.write(str(total_req_meta))				# the amount of phv that's non-symbolic (required)
+	f.write("\n")
+	f.writelines("%s " % ri for ri in ilp_reg_inst)		# number of instances for each reg array (correspond to stateful act nums)
+	f.write("\n")
+	if mem_var: 						# our util func applies to memory ILP vars
+		f.write("mem\n")
+		f.writelines("%s " % mv for mv in ilp_sym_to_reg_act_num[v1.switch_var])	# numbers that correspond to ILP vars that we use for util
+	elif act_var:						# our util func applies to act ILP vars
+		f.write("act\n")
+		f.writelines("%s " % av for av in ilp_sym_to_act_num[v1.switch_var])	# numbers that correspond to ILP vars
+	f.write("\n")
+	f.writelines("%s " % xv for xv in x_vals)		# x values for PWL util
+	f.write("\n")
+	f.writelines("%s " % yv for yv in y_vals)		# y values for PWL util (util values)
 
 
-#print ilp_sym_to_act_num
 
 
 
