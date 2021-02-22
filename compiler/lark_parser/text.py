@@ -959,7 +959,9 @@ with open("ilp_input.txt", "w") as f:
 	f.write(str(ilp_deps))					# list of deps
 	f.write("\n")
 	# TODO: TCAM ACT NUMS
+	f.write("\n")
 	# TODO: TCAM SIZES
+	f.write("\n")
 	f.writelines("%s " % rw for rw in ilp_reg_width)	# width of each reg array (corresponding to stateful act nums)
 	f.write("\n")
 	f.write("1")						# utililty provided? TODO: get rid of this
