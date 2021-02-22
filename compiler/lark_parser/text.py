@@ -21,7 +21,10 @@
 # ASSUME ONLY 1 STRUCT DEF (METADATA) - ALLOW MULTIPLE STRUCTS
 # UPDATE SAME_SIZE TO ALLOW FOR MULT SYMBOLIC ACTIONS TO ACCESS THE SAME SYM REG ARRAY
 # CHECK TODOs IN CODE
+# error checking for python code???
 
+# FIX PARSING TO WORK FOR UTILS W/O SWITCH STMTS
+# UPDATE PARSING TO SUPPORT MULTIPLE UTIL FUNCS DEFINED
 # ADD HEADER FIELDS TO META SIZE SECTION
 # FIX UPPER BOUND: IF ONE ACT IN LOOP IS STATEFUL, THEN THEY'RE ALL BOUND BY THAT
 # MULT LOOPS W/ DIFF SYM VALUE - DEP ANALYSIS WILL BE DIFFERENT (??)
@@ -96,11 +99,25 @@ sym_reg_write: SYM_ARRAY_NAME DOT WRITE LPAREN index_field COMMA read_field RPAR
 sym_reg_read: SYM_ARRAY_NAME DOT READ LPAREN write_field COMMA index_field RPAREN SEMICOLON
 hash_func: HASH LPAREN hash_index COMMA algo COMMA hash_num COMMA hash_list COMMA hash_num RPAREN SEMICOLON
 
-utility_func: optimize
+utility_func: opt NAME LBRACE function step? RBRACE
 
 
-optimize: MAXIMIZE
-	| MINIMIZE
+opt: MAXIMIZE
+   | MINIMIZE
+
+function: FUNCTION COLON func_def SEMICOLON
+
+func_def: switch
+	| python_func
+
+switch: SWITCH NAME LBRACE cases+ RBRACE
+cases: CASE INT LBRACE SCALE? python_func RBRACE
+     | DEFAULT LBRACE SCALE? python_func RBRACE
+
+step: STEP COLON INT SEMICOLON
+
+python_func: PYTHONCODE
+
 
 lvalue: NAME
       | SYM_ARRAY_NAME
@@ -180,6 +197,7 @@ LPAREN: "("
 RPAREN: ")"
 SEMICOLON: ";"
 COMMA: ","
+COLON: ":"
 WRITE: "write"
 READ: "read"
 META: "meta"
@@ -198,6 +216,13 @@ GREATERTHAN: ">"
 HDR: "hdr"
 MAXIMIZE: "maximize"
 MINIMIZE: "minimize"
+FUNCTION: "function"
+SCALE: "scale"
+STEP: "step"
+SWITCH: "switch"
+DEFAULT: "default"
+CASE: "case"
+PYTHONCODE: /.+/ 
 
 NAME: (WORD|"_") (LETTER|INT|"_")*
 META_NAME: NAME
@@ -254,6 +279,10 @@ class V_r1(Visitor_Recursive):
 		self.reg_inst = {}
 		self.sym_reg_inst = {}
 		self.sym_reg_array_inst = {}
+		self.opt_keyword = ""
+		self.switch_var = ""
+		self.step_size = 0
+		self.case_stmts = {}
 	def __default__(self,tree):
 		if tree.data=="action_decl":
 			self.action_defs[tree.children[1].value]=tree.children[4:]
@@ -277,8 +306,23 @@ class V_r1(Visitor_Recursive):
 			self.sym_reg_array_widths[tree.children[6].value]=tree.children[1].value
 			if tree.children[3].type== "SYM_REG_DEPTH":
 				self.sym_reg_array_inst[tree.children[6].value]=tree.children[3].value
-		elif tree.data=="utility_func":
-			self.util.append(tree)
+		elif tree.data=="opt":
+			self.opt_keyword = tree.children[0].value	# this assumes we only have one util func defined
+		elif tree.data=="switch":
+			self.switch_var = tree.children[1].value
+		elif tree.data=="cases":
+			if tree.children[0].type=="DEFAULT":
+				if isinstance(tree.children[2],Token):	# we're scaling the function
+					self.case_stmts[tree.children[0].value]=(tree.children[3].children[0].value,1)
+				else:
+					self.case_stmts[tree.children[0].value]=(tree.children[2].children[0].value,0)
+			if tree.children[0].type=="CASE":
+				if isinstance(tree.children[3],Token):  # we're scaling the function
+					self.case_stmts[tree.children[1].value]=(tree.children[4].children[0].value,1)
+				else:
+					self.case_stmts[tree.children[1].value]=(tree.children[3].children[0].value,0)
+		elif tree.data=="step":
+			self.step_size = int(tree.children[2].value)
 
 class V_r2(Visitor_Recursive):
 	def __init__(self, a_d):
@@ -439,6 +483,10 @@ v1.visit(parse_tree)
 #print v1.reg_inst
 #print v1.sym_reg_widths
 #print v1.sym_reg_inst
+#print v1.opt_keyword
+#print v1.switch_var
+#print v1.step_size
+#print v1.case_stmts
 
 v2 = V_r2(v1.action_defs)
 v2.visit(v1.apply[0])	# assuming we only have one apply block in the v1.apply list
@@ -615,8 +663,8 @@ for a1 in v2.sym_stmts:
 act_num = 0
 name_to_num = {}
 num_to_name = {}
-stateless_upper_bound = 10 
-stateful_upper_bound = 10
+stateless_upper_bound = 10 # this is stateless ALUs * num stgs
+stateful_upper_bound = 10	# this is stateful ALUs * num stgs
 ilp_loops = []
 for a in v2.stmts:
 	# we have a symolic in a loop
@@ -748,12 +796,15 @@ ilp_reg_inst = []
 ilp_reg_width = []
 # mapping symbolic value to reg size (by using the act num associated with each reg)
 ilp_sym_to_reg_act_num = {}
+sym_to_reg_width = {}
 for a_n in ilp_stateful:
 	a = num_to_name[a_n]
 	# would do a loop here if more than one reg in action, but for now we allow only 1
 	if a in sym_regs_used_acts:
 		ilp_reg_width.append(int(v1.sym_reg_array_widths[sym_regs_used_acts[a][0]].replace('bit<','').replace('>','')))
 		ilp_reg_inst.append(-1)
+		if v1.sym_reg_array_inst[sym_regs_used_acts[a][0]] not in sym_to_reg_width:
+			sym_to_reg_width[v1.sym_reg_array_inst[sym_regs_used_acts[a][0]]] = ilp_reg_width[-1]
 		if v1.sym_reg_array_inst[sym_regs_used_acts[a][0]] in ilp_sym_to_reg_act_num:
 			ilp_sym_to_reg_act_num[v1.sym_reg_array_inst[sym_regs_used_acts[a][0]]].append(a_n)
 		else:
@@ -772,7 +823,7 @@ for a_n in ilp_stateful:
 				ilp_sym_to_reg_act_num[v1.sym_reg_inst[regs_used_acts[a][0]]]=[a_n]
 
 
-print ilp_sym_to_reg_act_num
+#print ilp_sym_to_reg_act_num
 
 # stateful acts that share the same symbolic reg array
 # the size (# instances) of each reg array must be the same (bc indexed on same sym value)
@@ -815,10 +866,86 @@ for a in sym_regs_used_acts:
 # will use sym_regs_used_acts and reg_used_acts to connect them to nums?
 
 
+# parsing util function:
+# minimize or maximize? -> if minimize, we don't need to change anything (gurobi does this by default)
+# if maximize - we negate everything
+#
+# ignore util name for now, we'll only use this if we have a combination of utilities (using optimize keyword)?
+#
+# switch statement with symbolic var -> this will tell us what ILP vars we need to use
+# if symbolic is in ilp_sym_to_reg_act_num, then we know it's mem vars, otherwise it's action
+#
+# we transform case statements into if/elses
+# we can do function calculation in here instead of ILP?? ilp really just needs list of x and y vals
+# we need to replace switch_var with x - so we can easily apply the function
+# for now, function should be in python syntax
+# we'll need to get upper bound for cols somehow - use resources?
+# if memory variable, we need to use max mem in stg and max alus?
+#
+# step size - use this when creating x val list
+
+#opt = 'minimize'
+#switch_var = 'cols'
+#cases = {'0':'1', 'default': 'float(3)/float(x)'}
+#step = 2
+mem_var = 0
+act_var = 0
+stateful = 0
+
+# replacing the switch_var with x in these functions to make it work with python better TODO: is there a way around this?
+for c in v1.case_stmts:
+	v1.case_stmts[c] = (v1.case_stmts[c][0].replace(v1.switch_var,"x"),v1.case_stmts[c][1])
+
+if v1.switch_var in ilp_sym_to_reg_act_num:
+	mem_var = 1
+elif v1.switch_var in ilp_sym_to_act_num:
+	act_var = 1
+	if ilp_sym_to_act_num[0] in stateful:
+		stateful = 1
+
+ub = 0
+# utility function on ilp memory variables, upper bound is max memory in stg
+mem_per_stg = 1024
+if mem_var:
+	ub = mem_per_stg/sym_to_reg_width[v1.switch_var]
 
 
+# utility function on ilp act vars, upper bound is max alus in stg
+# CHECK IF STATELESS OR STATEFUL
+elif stateful:
+	ub = stateful_upper_bound	
+else:
+	ub = stateless_upper_bound
+
+x_vals = list(range(0,ub,v1.step_size))
+y_vals = []
+
+for v in x_vals:
+	if str(v) in v1.case_stmts:
+		f = lambda x: eval(v1.case_stmts[str(v)][0])
+		y_v = f(v)
+		if v1.opt_keyword=="maximize":
+			y_v = -1*y_v
+		if v1.case_stmts[str(v)][1]:
+			y_vals.append(y_v*1000000)
+		else:
+			y_vals.append(y_v)
+		continue
+	else:
+		f = lambda x: eval(v1.case_stmts['default'][0])
+		y_v = f(v)
+                if v1.opt_keyword=="maximize":
+                        y_v = -1*y_v
+		if v1.case_stmts['default'][1]:
+			y_vals.append(y_v*1000000)
+		else:
+			y_vals.append(y_v)
+		continue
+
+print y_vals
 
 
+#print ilp_sym_to_act_num
 
 
 
