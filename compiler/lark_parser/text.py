@@ -249,7 +249,7 @@ p = Lark(grammar,parser="earley")
 
 
 
-with open('t.txt', 'r') as file:
+with open('../cms.p4all', 'r') as file:
     data = file.read()
 
 # parse takes string as input
@@ -578,7 +578,7 @@ for a in v2.stmts:
 		sym_writes.append(set(s_w))
 		sym_regs.append(set(s_re))
 		if len(s_r) > 0 or len(s_w) > 0:
-			sym_meta_used_acts[a] = s_r+s_w
+			sym_meta_used_acts[a] = list(set(s_r+s_w))	# convert to set then list just to remove dups
 		if len(s_re)>0 and a not in stateful:
 			stateful.append(a)
 		if len(s_re) > 0:
@@ -647,7 +647,6 @@ for a1 in v2.sym_stmts:
 
 			deps[(a1,a2)]=3
 
-
 #v4_w_set = set(v4.writes)
 #v3_w_set = set(v3.writes)
 #print list(v3_w_set.intersection(v4_w_set))
@@ -715,6 +714,10 @@ for (a1,a2) in deps:
 	if a1 not in v2.sym_stmts and a2 not in v2.sym_stmts:
 		ilp_deps[(name_to_num[a1][0],name_to_num[a2][0])]=deps[(a1,a2)]
 		continue
+	# both symbolic, but different actions
+	elif a1 in v2.sym_stmts and a2 in v2.sym_stmts:
+		for a_i in range(len(name_to_num[a1])):
+			ilp_deps[(name_to_num[a1][a_i],name_to_num[a2][a_i])]=deps[(a1,a2)]
 	# one symbolic, one non-symbolic
 	elif a1 in v2.sym_stmts:
 		for a_n in name_to_num[a1]:
@@ -723,6 +726,7 @@ for (a1,a2) in deps:
 	elif a2 in v2.sym_stmts:
 		for a_n in name_to_num[a2]:
 			ilp_deps[(name_to_num[a1][0],a_n)]=deps[(a1,a2)]
+
 
 
 # keep track of actions that are in the same loop
@@ -738,13 +742,20 @@ for sym_loop in v2.loop_stmts:
 		curr_loop = []
 		for a in l:
 			if a.children[0].data=="conditional":
+				for act in a.children[0].children[5:-1]:
+					a_name = act.children[0].children[0].children[0].value
+					loop_name[sym_loop].append(a_name)
+					for n in name_to_num[a_name]:
+						curr_loop.append(n)
+						#if len(ilp_sym_to_act_num[sym_loop]) <= len(name_to_num[a_name]):
+						ilp_sym_to_act_num[sym_loop].append(n)
 				continue
 			a_name = a.children[0].children[0].children[0].value
 			loop_name[sym_loop].append(a_name)
 			for n in name_to_num[a_name]:
 				curr_loop.append(n)
-				if len(ilp_sym_to_act_num[sym_loop]) <= len(name_to_num[a_name]):
-					ilp_sym_to_act_num[sym_loop].append(n)
+				#if len(ilp_sym_to_act_num[sym_loop]) <= len(name_to_num[a_name]):
+				ilp_sym_to_act_num[sym_loop].append(n)
 		ilp_loops.append(curr_loop)
 
 #print ilp_sym_to_act_num
@@ -769,6 +780,9 @@ for sym in loop_name:
 # list of acts that use metadata
 # these have to be in order - meta_per relies on this
 # we're ignoring header fields for now - SHOULD WE DO THIS?
+# TODO: test this - we're only counting each meta field ONCE
+# ^ so for CMS, we count "count" for ONLY index or count action - so we might get index associated with 32 bits for each instance
+# and count associated with 32 bits for each instance (even though count really requires 64 bits of meta, but we already counted 32 with index)
 ilp_meta = []
 ilp_meta_sizes = []
 meta_num = {}
@@ -781,12 +795,11 @@ for a in sym_meta_used_acts:
 				continue
 			curr_meta.append(m.replace('[i]',''))
 			curr_meta_sizes.append(sym_meta_sizes[m.replace('[i]','')])
+			break
 		meta_num[a_n]=curr_meta
 		if len(curr_meta)>0:
 			ilp_meta.append(a_n)
 			ilp_meta_sizes.append(sum(curr_meta_sizes))
-			
-
 # need reg width for each stateful symbolic action
 # assume each stateful action uses at most one reg
 # we save sym reg sizes as a tuple (width, instances)
@@ -945,6 +958,7 @@ for v in x_vals:
 
 #print y_vals
 
+
 with open("ilp_input.txt", "w") as f:
 	f.writelines("%s " % s for s in ilp_stateful)		# numbers of acts that are stateful
 	f.write("\n")
@@ -952,9 +966,9 @@ with open("ilp_input.txt", "w") as f:
         f.write("\n")
         f.writelines("%s " % ms for ms in ilp_meta_sizes)	# sizes of each instance of symbolic meta (corresponding to act nums)
         f.write("\n")	
-	f.writelines("%s " % g for g in ilp_groups)		# nums of acts in groups (acts that must ALL be placed - all or nothing)
+	f.writelines("%s " % str(g).replace(" ","")  for g in ilp_groups)		# nums of acts in groups (acts that must ALL be placed - all or nothing)
 	f.write("\n")
-	f.writelines("%s " % l for l in ilp_loops)		# nums of acts in the same loop (not in loop - in list by itself)
+	f.writelines("%s " % str(l).replace(" ","") for l in ilp_loops)		# nums of acts in the same loop (not in loop - in list by itself)
 	f.write("\n")
 	f.write(str(ilp_deps))					# list of deps
 	f.write("\n")
