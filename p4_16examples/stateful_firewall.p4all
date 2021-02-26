@@ -1,0 +1,191 @@
+/* CONSTANTS */
+
+const bit<16> TYPE_IPV4 = 0x800;
+const bit<8>  TYPE_TCP  = 6;
+
+#define BLOOM_FILTER_ENTRIES 4096
+
+typedef bit<9>  egressSpec_t;
+typedef bit<48> macAddr_t;
+typedef bit<32> ip4Addr_t;
+
+header ethernet_t {
+    macAddr_t dstAddr;
+    macAddr_t srcAddr;
+    bit<16>   etherType;
+}
+
+header ipv4_t {
+    bit<4>    version;
+    bit<4>    ihl;
+    bit<8>    diffserv;
+    bit<16>   totalLen;
+    bit<16>   identification;
+    bit<3>    flags;
+    bit<13>   fragOffset;
+    bit<8>    ttl;
+    bit<8>    protocol;
+    bit<16>   hdrChecksum;
+    ip4Addr_t srcAddr;
+    ip4Addr_t dstAddr;
+}
+
+header tcp_t{
+    bit<16> srcPort;
+    bit<16> dstPort;
+    bit<32> seqNo;
+    bit<32> ackNo;
+    bit<4>  dataOffset;
+    bit<4>  res;
+    bit<1>  cwr;
+    bit<1>  ece;
+    bit<1>  urg;
+    bit<1>  ack;
+    bit<1>  psh;
+    bit<1>  rst;
+    bit<1>  syn;
+    bit<1>  fin;
+    bit<16> window;
+    bit<16> checksum;
+    bit<16> urgentPtr;
+}
+
+struct custom_metadata_t {
+    bit<32> reg_pos_one; 
+    bit<32> reg_pos_two;
+    bit<1> reg_val_one;
+    bit<1> reg_val_two;
+    bit<1> direction;
+}
+
+struct headers {
+    ethernet_t   ethernet;
+    ipv4_t       ipv4;
+    tcp_t        tcp;
+}
+
+control MyIngress(inout headers hdr,
+                  inout metadata meta,
+                  inout standard_metadata_t standard_metadata) {
+
+    register<bit<bit<1>>(BLOOM_FILTER_ENTRIES) bloom_filter_1;
+    register<bit<bit<1>>(BLOOM_FILTER_ENTRIES) bloom_filter_2;
+
+    action drop() {
+        mark_to_drop(standard_metadata);
+    }
+
+
+    action compute_hash_1(){
+       //Get register position
+       hash(meta.reg_pos_one, HashAlgorithm.crc16, (bit<32>)0, {hdr.ipv4.srcAddr,
+                                                           hdr.ipv4.dstAddr,
+                                                           hdr.tcp.srcPort,
+                                                           hdr.tcp.dstPort,
+                                                           hdr.ipv4.protocol},
+                                                           (bit<32>)BLOOM_FILTER_ENTRIES);
+	}
+
+action compute_hash_1(){
+       hash(meta.reg_pos_two, HashAlgorithm.crc32, (bit<32>)0,{hdr.ipv4.srcAddr,
+                                                           hdr.ipv4.dstAddr,
+                                                           hdr.tcp.srcPort,
+                                                           hdr.tcp.dstPort,
+                                                           hdr.ipv4.protocol},
+                                                           (bit<32>)BLOOM_FILTER_ENTRIES);
+    }
+
+    action ipv4_forward(macAddr_t dstAddr, egressSpec_t port) {
+        standard_metadata.egress_spec = port;
+        hdr.ethernet.srcAddr = hdr.ethernet.dstAddr;
+        hdr.ethernet.dstAddr = dstAddr;
+        hdr.ipv4.ttl = hdr.ipv4.ttl - 1;
+    }
+    
+    table ipv4_lpm {
+        key = {
+            hdr.ipv4.dstAddr: lpm;
+        }
+        actions = {
+            ipv4_forward;
+            drop;
+            NoAction;
+        }
+        size = 1024;
+        default_action = drop();
+    }
+
+    action set_direction(bit<1> dir) {
+        meta.direction = dir;
+    }
+
+    table check_ports {
+        key = {
+            standard_metadata.ingress_port: exact;
+            standard_metadata.egress_spec: exact;
+        }
+        actions = {
+            set_direction;
+            NoAction;
+        }
+        size = 1024;
+        default_action = NoAction();
+    }
+    
+    action bloom_1_write() {
+	bloom_filter_1.write(meta.reg_pos_one, 1);
+    }
+
+    action bloom_2_write() {
+	bloom_filter_2.write(meta.reg_pos_two, 1);
+    }
+
+
+    action bloom_1_read() {
+	bloom_filter_1.read(meta.reg_val_one, meta.reg_pos_one);
+    }
+
+
+    action bloom_2_read() {
+	bloom_filter_2.read(meta.reg_val_two, meta.reg_pos_two);
+    }
+
+    apply {
+        if (hdr.ipv4.isValid()){
+            ipv4_lpm.apply();
+            if (hdr.tcp.isValid()){
+                meta.direction = 0; // default
+                if (check_ports.apply().hit) {
+                    // test and set the bloom filter
+                    if (meta.direction == 0) {
+                        compute_hash_1();
+			compute_hash_2();
+                    }
+                    else {
+                        compute_hash_1();
+			compute_hash_2();
+                    }
+                    // Packet comes from internal network
+                    if (meta.direction == 0){
+                        // If there is a syn we update the bloom filter and add the entry
+                        if (hdr.tcp.syn == 1){
+                            bloom_1_write();
+                            bloom_2_write();
+                        }
+                    }
+                    // Packet comes from outside
+                    else if (meta.direction == 1){
+                        // Read bloom filter cells to check if there are 1's
+                        bloom_1_read();
+                        bloom_2_read();
+                        // only allow flow to pass if both entries are set
+                        if (meta.reg_val_one != 1 || meta.reg_val_two != 1){
+                            drop();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
