@@ -27,6 +27,7 @@ header ipv4_t {
 
 header kvs_value_t {
     bit<32>   value;
+    bit<1>    write;
 }
 
 struct custom_metadata_t {
@@ -98,10 +99,12 @@ table check_cache_exist {
 	/* KVS */
 	check_cache_exist.apply();
 	if (meta.cache_index == 1) {
-		read_kvs();
-	}
-	else {
-		write_kvs();
+		if (hdr.kvs_value.write == 0) {
+			read_kvs();
+		}
+		if (hdr.kvs_value.write == 1) {
+			write_kvs();
+		}
 	}
     }
 }
