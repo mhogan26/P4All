@@ -32,7 +32,7 @@ deps = ast.literal_eval(prog_info[5])
 # list of which actions are in tables that require TCAM (ternary match)
 tcam_acts = list(map(int, prog_info[6].split()))
 # list of REQUIRED tcam actions and their sizes
-required_tcam = list(map(int, prog_info[7].split()))
+tcam_size = list(map(int, prog_info[7].split()))
 # size of each register (bits) in reg array (size of items store in regs in bits) - this is ONLY for symbolic values
 item_size = list(map(int, prog_info[8].split()))
 # flag to tell us if user provided utility (if not, then default utility is minimize stgs used)
@@ -50,10 +50,12 @@ util_var_type = prog_info[15]
 # nums corresponding to ILP vars that we use in PWL util
 util_var_nums = list(map(int, prog_info[16].split()))
 # x vals - possible vals for ILP vars
-util_x_vals = list(map(int, prog_info[17].split()))
+util_x_vals = [ast.literal_eval(x) for x in prog_info[17].split()]
+#util_x_vals = list(map(int, prog_info[17].split()))
 # y vals - util corresponding to each possible x val
+#util_y_vals = [ast.literal_eval(x) for x in prog_info[18].split()]
 util_y_vals = list(map(float, prog_info[18].split()))
-
+util_y_vals = [el * 100000 for el in util_y_vals]
 
 switch_info = []
 with open("resources.txt",'r') as f:
@@ -73,10 +75,8 @@ num_state = switch_info[2]
 phv = switch_info[3]
 # TCAM per stg
 tcam = switch_info[4]
-# size of item stored in tcam
-tcam_size = switch_info[5]
 # hashes per stg
-hashes = switch_info[6]
+hashes = switch_info[5]
 
 
 start_time = time.time()
@@ -193,12 +193,12 @@ for l in stateful:
                 stages_mem_vars[i].append(mem_vars[j][-1])
 		if util_var_type=="mem" and l in util_var_nums:
 			util_mem_vars.append(mem_vars[j][-1])
-                if reg_inst[j]==-1:     # reg has symbolic size
-                        m.addConstr(mem_vars[j][-1]*item_size[j] <= act_vars[l][i]*total_mem)   # actions not allocated have 0 memory
-                        m.addConstr(mem_vars[j][-1]*item_size[j] >= act_vars[l][i])             # actions in stgs have nonzero memory allocation
-                else:
-                        m.addConstr(mem_vars[j][-1]==reg_inst[j])       # the reg isn't symbolic, so we require that we allocate mem for it
+                m.addConstr(mem_vars[j][-1]*item_size[j] <= act_vars[l][i]*total_mem)   # actions not allocated have 0 memory
+                m.addConstr(mem_vars[j][-1]*item_size[j] >= act_vars[l][i])             # actions in stgs have nonzero memory allocation
                 stg_count += 1
+
+	if reg_inst[j]!=-1:
+		m.addConstr(quicksum(mem_vars[-1]==reg_inst[j]))	# the reg isn't symbolic, so we require that we allocate mem for it
 
         # j is the index we care about?
         for s in same_size:
@@ -207,6 +207,9 @@ for l in stateful:
 
 
 	#act_count += 1
+
+#for ml in mem_vars:
+#	m.addConstr(quicksum(ml)>=1)
 
 # each reg in stages_mem could have a different item_size, so we iterate through each item size
 sum_list = []
@@ -225,13 +228,14 @@ if len(stateful) > 0:
 
 # same_size is list, items are list of act_var numbers
 
-c = -1
+
+#c = -1
 if len(stateful) > 0:   # if we have stateful acts
         for sl in same_size:
                 for s in sl:
                         if sl.index(s) == 0:
                                 continue
-                        m.addConstr(quicksum(mem_vars[same_size_mem_vars[same_size.index(sl)][sl.index(s)]])*quicksum(act_vars[sl[0]])==quicksum(mem_vars[same_size_mem_vars[same_size.index(sl)][0]])*quicksum(act_vars[s]))
+                        m.addConstr(quicksum(mem_vars[same_size_mem_vars[same_size.index(sl)][sl.index(s)]])*quicksum(act_vars[sl.index(s)-1])==quicksum(mem_vars[same_size_mem_vars[same_size.index(sl)][sl.index(s)-1]])*quicksum(act_vars[s]))
 
 
 # enforce same mem constraint for required vars
@@ -266,6 +270,26 @@ for me in range(len(mem_vars)):
 # do we need to account for this?
 
 #'''
+# TCAM constraint
+# if size = -1, then it's symbolic
+# else, we require the table gets the requested size or we fail
+tcam_vars = []
+stages_tcam_vars = [[]] * num_stg
+for ta in tcam_acts:
+	t_i = tcam_acts.index(ta)
+	tcam_vars.append([])
+	for i in range(num_stg):
+		tcam_vars[-1].append(m.addVar(lb=0,ub=tcam,vtype=GRB.INTEGER,name="tcam%s_%s"%(ta,i)))
+		stages_tcam_vars[i].append(tcam_vars[-1][-1])
+		m.addConstr(mem_vars[-1][-1] <= act_vars[l][i]*tcam)   # actions not allocated have 0 memory
+               	m.addConstr(mem_vars[-1][-1] >= act_vars[l][i])             # actions in stgs have nonzero memory allocation
+	if tcam_size[t_i] != -1:
+		m.addConstr(quicksum(tcam_vars[-1])==tcam_size[t_i])
+# can't exceed the avail amount of tcam per stg
+for st in stages_tcam_vars:
+	m.addConstr(quicksum(st)<=tcam)
+
+
 # phv constraint
 # note that phv corresponds to the remaining phv AFTER the required (non-symbolic) fields are accounted for
 # meta variables correspond to act_vars
@@ -334,6 +358,12 @@ elif util_var_type=="act":
 			m.setPWLObj(av,util_x_vals,util_y_vals)
 
 #'''
+
+#for ml in mem_vars:
+#	for mv in ml:
+#		m.setPWLObj(mv,util_x_vals,util_y_vals)
+
+
 # Solve
 m.optimize()
 
