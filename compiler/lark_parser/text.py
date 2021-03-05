@@ -1,3 +1,4 @@
+import sys
 # we're not allowing symbolic reg sizes here (i.e., can't make regs wider)
 
 # ACTION EXPRESSIONS
@@ -22,7 +23,13 @@
 # UPDATE SAME_SIZE TO ALLOW FOR MULT SYMBOLIC ACTIONS TO ACCESS THE SAME SYM REG ARRAY
 # CHECK TODOs IN CODE
 # error checking for python code???
+# FIX TABLE CODE SO THAT META FIELDS CAN ALSO BE MATCHED IN TABLE?
+# ACTION DEFINED ONCE BUT USED IN MULT TABLES - HOW TO DO THIS IN ILP?
 
+# FOR LOOP IN CONDITIONAL???
+# ADD TYPECASTING TO HASH_NUM -> (bit<32>)
+# MARK TO DROP WRITES CERTAIN FIELDS
+# ADD ARGUMENTS TO DROP FUNCTION
 # ADD CASES WHERE WE CREATE MULT INSTANCES OF ILP AND PICK BEST (bloom filter)
 # FIX PARSING TO WORK FOR UTILS W/O SWITCH STMTS
 # UPDATE PARSING TO SUPPORT MULTIPLE UTIL FUNCS DEFINED
@@ -71,12 +78,27 @@ controllocaldecl: action_decl
 		| reg_decl
 		| sym_reg_decl
 		| sym_reg_array_decl
-action_decl: ACTION NAME LPAREN RPAREN "{" block_stmt+ "}"
+		| table_decl
+
+action_decl: ACTION NAME LPAREN params? RPAREN "{" block_stmt+ "}"
 sym_action_decl: ACTION NAME LPAREN RPAREN "[" "i" "]" "{" block_stmt+ "}"
 reg_decl: REGISTER "<" BIT_SIZE ">" LPAREN REG_DEPTH RPAREN NAME SEMICOLON
 sym_reg_decl: REGISTER "<" BIT_SIZE ">" LPAREN SYM_REG_DEPTH RPAREN NAME SEMICOLON
 sym_reg_array_decl: REGISTER "<" BIT_SIZE ">" LPAREN SYM_REG_DEPTH RPAREN "[" NAME "]" NAME SEMICOLON
 apply_block: APPLY "{" block_stmt+ "}"
+table_decl: TABLE NAME LBRACE key actions size default? RBRACE
+
+params: (BIT_SIZE|NAME) NAME
+      | NAME
+      | params COMMA params
+
+key: KEY ASSIGN LBRACE (lvalue COLON match SEMICOLON)+ RBRACE
+actions: ACTIONS ASSIGN LBRACE (NAME SEMICOLON)+ RBRACE
+size: SIZE ASSIGN (INT|NAME) SEMICOLON
+default: DEFAULT_ACTION ASSIGN NAME LPAREN RPAREN SEMICOLON
+match: EXACT
+     | TERNARY
+     | LPM
 
 block_stmt: conditional
 	  | method_call
@@ -88,8 +110,13 @@ block_stmt: conditional
 	  | sym_reg_write
 	  | sym_reg_read
 	  | hash_func
+	  | table_apply
+	  | drop
 
-conditional: IF LPAREN expression RPAREN LBRACE block_stmt+ RBRACE
+drop: DROP LPAREN RPAREN SEMICOLON
+conditional: IF LPAREN expression RPAREN LBRACE block_stmt+ RBRACE (ELSE IF LPAREN expression RPAREN LBRACE block_stmt+ RBRACE)? (ELSE LBRACE block_stmt+ RBRACE)?
+
+
 method_call: lvalue LPAREN RPAREN SEMICOLON
 sym_method_call: lvalue LPAREN RPAREN "[" "i" "]" SEMICOLON
 for_loop: FOR LPAREN "i" LESSTHAN NAME RPAREN LBRACE block_stmt+ RBRACE 
@@ -99,6 +126,7 @@ reg_read: NAME DOT READ LPAREN write_field COMMA index_field RPAREN SEMICOLON
 sym_reg_write: SYM_ARRAY_NAME DOT WRITE LPAREN index_field COMMA read_field RPAREN SEMICOLON
 sym_reg_read: SYM_ARRAY_NAME DOT READ LPAREN write_field COMMA index_field RPAREN SEMICOLON
 hash_func: HASH LPAREN hash_index COMMA algo COMMA hash_num COMMA hash_list COMMA hash_num RPAREN SEMICOLON
+table_apply: NAME DOT APPLY LPAREN RPAREN SEMICOLON
 
 utility_func: opt NAME LBRACE function step? RBRACE
 
@@ -139,6 +167,7 @@ expression: INT
           | expression LPAREN RPAREN 
 	  | expression LESSTHAN expression
 	  | expression GREATERTHAN expression
+	  | expression EQ expression
 
 write_field: NAME
            | SYM_ARRAY_NAME
@@ -167,6 +196,7 @@ hash_index: NAME
 
 hash_num: CONST_NAME
 	| SIGNED_INT
+	| INT
 
 hash_list: LBRACE hash_fields RBRACE 
 
@@ -224,6 +254,17 @@ SWITCH: "switch"
 DEFAULT: "default"
 CASE: "case"
 PYTHONCODE: /.+/ 
+TABLE: "table"
+EQ: "=="
+DEFAULT_ACTION: "default_action"
+ACTIONS: "actions"
+KEY: "key"
+EXACT: "exact"
+TERNARY: "ternary"
+LPM: "lpm"
+SIZE: "size"
+DROP: "mark_to_drop"
+ELSE: "else"
 
 NAME: (WORD|"_") (LETTER|INT|"_")*
 META_NAME: NAME
@@ -249,7 +290,7 @@ p = Lark(grammar,parser="earley")
 
 
 
-with open('../cms.p4all', 'r') as file:
+with open(sys.argv[1], 'r') as file:
     data = file.read()
 
 # parse takes string as input
@@ -284,9 +325,16 @@ class V_r1(Visitor_Recursive):
 		self.switch_var = ""
 		self.step_size = 0
 		self.case_stmts = {}
+		self.tables_acts = {}
+		self.tables_match = {}
+		self.tables_size = {}
+		self.symbolics = []
 	def __default__(self,tree):
 		if tree.data=="action_decl":
-			self.action_defs[tree.children[1].value]=tree.children[4:]
+			if isinstance(tree.children[4],Token):	# we have params in the action
+				self.action_defs[tree.children[1].value]=tree.children[5:]
+			else:
+				self.action_defs[tree.children[1].value]=tree.children[4:]
 		elif tree.data=="sym_action_decl":
 			self.action_defs[tree.children[1].value]=tree.children[4:]
 		elif tree.data=="apply_block":
@@ -324,6 +372,12 @@ class V_r1(Visitor_Recursive):
 					self.case_stmts[tree.children[1].value]=(tree.children[3].children[0].value,0)
 		elif tree.data=="step":
 			self.step_size = int(tree.children[2].value)
+		elif tree.data=="table_decl":
+			self.tables_acts[tree.children[1].value] = tree.children[4]
+			self.tables_match[tree.children[1].value] = tree.children[3]
+			self.tables_size[tree.children[1].value] = tree.children[5].children[2].value
+		elif tree.data=="sym_decl":
+			self.symbolics.append(tree.children[1].value)
 
 class V_r2(Visitor_Recursive):
 	def __init__(self, a_d):
@@ -332,6 +386,8 @@ class V_r2(Visitor_Recursive):
 		self.loop_stmts = {}
 		self.action_defs = a_d
 		self.conditionals = {}
+		self.conditional_acts = []
+		self.t = []
 	def __default__(self,tree):
 		'''
 		# ????? we need to replace action calls with action defs, and use those to construct basic blocks
@@ -351,8 +407,42 @@ class V_r2(Visitor_Recursive):
 			self.stmts.append(tree.children[0].children[0].value)
 			self.sym_stmts.append(tree.children[0].children[0].value)
 		elif tree.data=="conditional":
+			self.conditional_acts.append([])
+			# conditional dictionary is action(table) name: conditional_expr
+			#if tree.children[0].type=="IF":	# if stmt
+			if_expr = [tree.children[2]]
+			#else:	# else if
+			#	if_expr = tree.children[3]
 			for c in tree.children[5:-1]:
-				self.conditionals[c.children[0].children[0].children[0].value]=tree.children[2]
+
+				# nested conditionals: dict value should be a list, not a single expr
+				# we check to see if we've already added the value to the dict (if not, create new entry)
+				# every time we hit a conditional, we go through EVERY action in its body and append the expression to its list
+				# this is a lot of extra work, and is NOT efficient, but will work for now
+
+
+				if isinstance(c,Tree) and c.data=="block_stmt":	
+					if isinstance(c.children[0].children[0], Tree):	# we call an action, not a table
+						if c.children[0].children[0].children[0].value in self.conditionals:
+							self.conditionals[c.children[0].children[0].children[0].value]+=if_expr
+							self.conditional_acts[-1].append(c.children[0].children[0].children[0].value)
+						else:
+							self.conditionals[c.children[0].children[0].children[0].value]=if_expr
+							self.conditional_acts[-1].append(c.children[0].children[0].children[0].value)
+
+					elif c.children[0].data=="table_apply":	# table apply --> WILL NEED TO ASSOCIATE ACTS W/IN TABLE TO IF EXPR
+						if c.children[0].children[0].value in self.conditionals:
+							self.conditionals[c.children[0].children[0].value]+=if_expr
+							self.conditional_acts[-1].append(c.children[0].children[0].value)
+						else:
+							self.conditionals[c.children[0].children[0].value] = if_expr
+							self.conditional_acts[-1].append(c.children[0].children[0].value)
+
+				elif isinstance(c,Tree) and c.data=="expression":
+					if_expr.append(c)
+			self.t.append(tree)
+		elif tree.data=="table_apply":
+			self.stmts.append("table_"+tree.children[0].value)
 
 # this function (called for each action def) produces a list of the meta that an action reads and/or writes to
 # looks on either side of = in assignment stmts
@@ -468,7 +558,8 @@ class Cond_reads(Visitor_Recursive):
                                 	self.reads.append(tree.children[-1].value)
                         	if tree.children[-1].type=="SYM_ARRAY_NAME":
                                 	self.sym_reads.append(tree.children[-1].value)
-
+				if tree.children[-1].type=="HDR_FIELD":
+					self.reads.append(tree.children[2].value+"."+tree.children[4].value)
 
 v1 = V_r1()
 v1.visit(parse_tree)
@@ -488,12 +579,74 @@ v1.visit(parse_tree)
 #print v1.switch_var
 #print v1.step_size
 #print v1.case_stmts
+#print v1.tables_acts
+#print v1.tables_match
+#print v1.tables_size
 
 v2 = V_r2(v1.action_defs)
 v2.visit(v1.apply[0])	# assuming we only have one apply block in the v1.apply list
 #print v2.stmts
-#print v2.conditionals
+#print v2.conditionals["write_kvs"]
 #print v2.loop_stmts
+#print v2.t
+#print v2.conditional_acts
+#print v2.t
+
+
+#TODO: make this work if for loop w/in conditional
+#TODO: make this work for expressions directly in control? not in actions?
+def merge_dicts(x,y):
+	z = x.copy()
+	z.update(y)
+	return z
+
+
+# TODO: GET ACTS THAT ARE IN THE SAME IF/ELSE BLOCKS
+# IF THEY'RE IN THE SAME BLOCK, THEN WE DON'T ERROR OUT IF THEY USE THE SAME REG
+# ONLY COUNT REG ONCE FOR THOSE ACTIONS (CHECK IF THEY'RE IN THE SAME IF/ELSE BLOCK)
+
+def get_expr_acts(ct,if_expr,expr_acts):
+	if_expr+=[ct.children[2]]
+	#print if_expr
+	for ct_c in ct.children:
+		if isinstance(ct_c,Token):
+			continue
+		if ct_c.data=="block_stmt":
+			if ct_c.children[0].data=="conditional":
+				#print ct_c
+				merge_dicts(expr_acts,get_expr_acts(ct_c.children[0],if_expr,expr_acts))
+			elif ct_c.children[0].data=="table_apply":
+				if ct_c.children[0].children[0].value not in expr_acts:
+					expr_acts[ct_c.children[0].children[0].value] = [if_expr]
+				else:
+					expr_acts[ct_c.children[0].children[0].value].append(if_expr)
+
+			elif isinstance(ct_c.children[0].children[0],Tree) and ct_c.children[0].children[0].data=="lvalue":
+				#print "lv"
+				#print if_expr
+				#print expr_acts
+				if ct_c.children[0].children[0].children[0].value not in expr_acts:
+					expr_acts[ct_c.children[0].children[0].children[0].value]=[if_expr]
+				else:
+					expr_acts[ct_c.children[0].children[0].children[0].value].append(if_expr)
+	return expr_acts
+
+conditionals = {}
+conditional_act_groups = []
+for ct in v2.t:	# each of these is a conditional block
+	x=get_expr_acts(ct,[],conditionals)
+	if x.keys() not in conditional_act_groups:
+		conditional_act_groups.append(x.keys())
+	conditionals = x
+
+#print conditional_act_groups
+# THIS ONLY WORKS IF ACTS ARE CALLED ONCE IN CONTROL!!!!!
+for x in conditionals:
+	keep = []
+	for v in conditionals[x]:
+		if len(v) > len(keep):
+			keep = v
+	conditionals[x] = keep
 
 '''
 v3 = Act_reads_writes()
@@ -503,6 +656,22 @@ print v3.reads
 v4 = Act_reads_writes()
 v4.visit(v1.action_defs['t'])
 '''
+
+# clean up table dicts
+for t in v1.tables_acts:
+	a_names = []
+	for a in v1.tables_acts[t].children:
+		if a.type=="NAME" and a.value != "NoAction":
+			a_names.append(a.value)
+	v1.tables_acts[t] = a_names
+
+# assuming for now that all matches are header fields
+for t in v1.tables_match:
+	mat = []
+	for m in v1.tables_match[t].children:
+		if isinstance(m,Tree) and m.data=="lvalue":
+			mat.append(m.children[2].value+"."+m.children[4].value)
+	v1.tables_match[t]=mat
 
 # get sizes for each meta declaration
 meta_sizes = {}
@@ -541,7 +710,41 @@ meta_used_acts = {}
 regs_used_acts = {}
 sym_meta_used_acts = {}
 sym_regs_used_acts = {}
+acts_writes = {}
+tables_acts_cond = {}
 for a in v2.stmts:
+	if "table_" in a:
+		t_r = []
+		t_w = []
+		t_re = []
+		t_s_r = []
+		t_s_w = []
+		t_s_re = []
+		# for each action in the table, we read from the conditional - add this value to table match?
+		if a.replace("table_","") in conditionals:
+			for c in conditionals[a.replace("table_","")]:
+				vc = Cond_reads()
+				vc.visit(conditionals[a.replace("table_","")])
+				v1.tables_match[a.replace("table_","")]+=vc.reads
+		# go through each action in table --> read includes match field
+		# for now, assume don't have symbolic num of tables --> TODO: symbolic array of tables?
+		for k in v1.tables_match[a.replace("table_","")]:
+			t_r.append(k)
+		for ta in v1.tables_acts[a.replace("table_","")]:
+			for ta_e in v1.action_defs[ta]:
+				v = Act_reads_writes(hashes,ta)
+				v.visit(ta_e)
+				hashes = v.hashes
+				t_r += v.reads
+				t_w += v.writes
+				if v.regs not in t_re:
+					t_re += v.regs
+					if ta not in stateful and len(v.regs) > 0:
+						stateful.append(ta)
+		writes.append(set(t_w))
+		reads.append(set(t_r))
+		regs.append(set(t_re))
+		continue
 	a_r = []
 	a_w = []
 	s_r = []
@@ -559,18 +762,23 @@ for a in v2.stmts:
 			s_r+=v.sym_reads
 			s_w+=v.sym_writes
 			s_re+=v.sym_regs
-	if a in v2.conditionals:
-		vc = Cond_reads()
-		vc.visit(v2.conditionals[a])
-		a_r+=vc.reads
-		s_r+=vc.sym_reads
-	if len(re)>0:
+	if a in conditionals:
+		for c in conditionals[a]:
+			vc = Cond_reads()
+			vc.visit(c)
+			a_r+=vc.reads
+			s_r+=vc.sym_reads
+	if len(re)>0 and set(re) not in regs:
 		stateful.append(a)
 	reads.append(set(a_r))
 	writes.append(set(a_w))
+	acts_writes[a] = list(set(a_w))
 	if len(a_r) > 0 or len(a_w) > 0:
 		meta_used_acts[a] = a_r+a_w
-	regs.append(set(re))
+	if set(re) not in regs:
+		regs.append(set(re))
+	else:
+		regs.append(set([]))
 	if len(re)>0:
 		regs_used_acts[a]=re
 	if a in v2.sym_stmts:
@@ -584,7 +792,6 @@ for a in v2.stmts:
 		if len(s_re) > 0:
 			sym_regs_used_acts[a]=s_re
 
-#print regs_used_acts
 
 #print reads
 #print writes
@@ -594,34 +801,69 @@ deps = {}
 # this is deps for NON SYMBOLIC fields
 # if a symbolic action (aka in a loop) uses a NON symbolic meta field, we record the dep (bc we have to unroll the loop)
 for a1 in v2.stmts:
+	a1_t = False
+	if "table_" in a1:
+		a1_t = True
 	a1_i = v2.stmts.index(a1)
 	for a2 in v2.stmts:
+		a2_t = False
+		if "table_" in a2:
+			a2_t = True
 		a2_i = v2.stmts.index(a2)
 		if a1 not in v2.sym_stmts and a2 not in v2.sym_stmts:
 			if a1_i >= a2_i:
 				continue
 		elif a1_i > a2_i:
 			continue
+		# check if acts are in if/else block
+		ie = False
+		for cg in conditional_act_groups:
+			if (set([a1,a2]).issubset(set(cg))):
+				ie = True
+				break
+		if a1==a2 and a1 in v2.sym_stmts:	# we have an action in a symbolic loop, check to see what non-symbolics it uses
+			if len(writes[a1_i]) > 0:	# symbolic actions write to same non-symbolic field
+				deps[(a1,a2)] = 1
+			continue			# don't care if they read from same fields bc can have concurrent reads
 		# read after write
-		if len(writes[a1_i].intersection(reads[a2_i])) > 0:
-			deps[(a1,a2)]=1
+		if len(writes[a1_i].intersection(reads[a2_i])) > 0 and not ie:
+			if "table_" in a1:
+				deps[(v1.tables_acts[a1.replace("table_","")][0],a2)] = 1
+                        elif "table_" in a2:
+                                deps[(a1,v1.tables_acts[a2.replace("table_","")][0])] = 1
+			else:
+				deps[(a1,a2)]=1
 			#continue
 		# write after read
-		if len(reads[a1_i].intersection(writes[a2_i])) > 0:
-                        deps[(a1,a2)]=1
+		if len(reads[a1_i].intersection(writes[a2_i])) > 0 and not ie:
+                        if "table_" in a1:
+                                deps[(v1.tables_acts[a1.replace("table_","")][0],a2)] = 1
+                        elif "table_" in a2:
+                                deps[(a1,v1.tables_acts[a2.replace("table_","")][0])] = 1
+                        else:
+                                deps[(a1,a2)]=1
                         #continue
 		# write after write
-                if len(writes[a1_i].intersection(writes[a2_i])) > 0:
-                        deps[(a1,a2)]=1
+                if len(writes[a1_i].intersection(writes[a2_i])) > 0 and not ie:
+                        if "table_" in a1:
+                                deps[(v1.tables_acts[a1.replace("table_","")][0],a2)] = 1
+			elif "table_" in a2:
+				deps[(a1,v1.tables_acts[a2.replace("table_","")][0])] = 1
+                        else:
+                                deps[(a1,a2)]=1
                         #continue
 		# access same reg
 		if len(regs[a1_i].intersection(regs[a2_i])) > 0:
-			if (a1,a2) in deps:
+			if (a1,a2) in deps or (a1_t and (v1.tables_acts[a1.replace("table_","")][0],a2) in deps) or (a2_t and (a1,v1.tables_acts[a2.replace("table_","")][0]) in deps):
 				if a1==a2:
 					print "ERROR: symbolic action %s accesses the same non-symbolic register in different iterations"%(a1)
 					exit()
-				print "ERROR: actions %s and %s access the same register but have a dependency"%(a1,a2)
-				exit()
+				
+				if ie:
+					deps.pop((a1,a2),None)
+				else:
+					print "ERROR: actions %s and %s access the same register but have a dependency"%(a1,a2)
+					exit()
 			deps[(a1,a2)]=3
 
 # SYMBOLIC DEPS
@@ -647,12 +889,37 @@ for a1 in v2.sym_stmts:
 
 			deps[(a1,a2)]=3
 
+
+# TCAM DEPS
+# actions in same table must be in same stg
+tcam_acts = []
+ilp_tcam_size = []
+for t in v1.tables_acts:
+	if v1.tables_size[t] in v1.symbolics:
+		ilp_tcam_size.append(-1)
+	else:
+		ilp_tcam_size.append(v1.tables_size[t])
+	tcam_acts.append(v1.tables_acts[t][0])
+	for a_i in range(len(v1.tables_acts[t])):
+		if a_i==0:
+			continue
+		deps[(v1.tables_acts[t][a_i-1],v1.tables_acts[t][a_i])]=3
+
+	# If table matches to field that is modified before table, CANNOT be in same stage (raw)
+	t_i = v2.stmts.index("table_"+t)
+	if t_i==0:	# table is first thing in apply block, nothing modified before
+		continue
+	for a in v2.stmts[:t_i]:
+		for aw in acts_writes[a]:
+			if aw in v1.tables_match[t]:
+				for at in v1.tables_acts[t]:
+					deps[(a,at)]=1
+
 #v4_w_set = set(v4.writes)
 #v3_w_set = set(v3.writes)
 #print list(v3_w_set.intersection(v4_w_set))
 
 #print deps
-
 
 # maybe we do this in ILP? so we don't have to read from resource file multiple times?
 # we need to create mapping from action name to number (numbers used in ILP)
@@ -663,12 +930,20 @@ for a1 in v2.sym_stmts:
 act_num = 0
 name_to_num = {}
 num_to_name = {}
-stateless_upper_bound = 10 # this is stateless ALUs * num stgs
-stateful_upper_bound = 10	# this is stateful ALUs * num stgs
+stateless_upper_bound = 11 # this is stateless ALUs * num stgs
+stateful_upper_bound = 11	# this is stateful ALUs * num stgs
 ilp_loops = []
+# give SYMBOLIC VAL an upper bound, not an action
 for a in v2.stmts:
+	if "table_" in a:
+		for at in v1.tables_acts[a.replace("table_","")]:
+			name_to_num[at]=[act_num]
+			act_num += 1
+		continue
 	# we have a symolic in a loop
 	if a in v2.sym_stmts:
+		if "table_" in a:
+			continue
 		name_to_num[a]=[]
 		ub = stateless_upper_bound
 		if a in stateful:	# make the upper bound a little smaller if we can
@@ -686,6 +961,11 @@ for a in v2.stmts:
 		act_num += 1
 
 # after we finish the loop, act_num = TOTAL NUM OF ACTIONS we have in the prog
+
+# tcam acts - TODO: ALLOW FOR SYMBOLIC NUM OF TABLES?
+ilp_tcam_acts = []
+for at in tcam_acts:
+	ilp_tcam_acts.append(name_to_num[at][0])
 
 # get list of stateful actions that use numbers instead of name
 ilp_stateful = []
@@ -814,6 +1094,7 @@ sym_to_reg_width = {}
 for a_n in ilp_stateful:
 	a = num_to_name[a_n]
 	# would do a loop here if more than one reg in action, but for now we allow only 1
+	# sym_regs_used_acts is ONLY stateful actions w/in for loop (symbolic array of regs)
 	if a in sym_regs_used_acts:
 		ilp_reg_width.append(int(v1.sym_reg_array_widths[sym_regs_used_acts[a][0]].replace('bit<','').replace('>','')))
 		ilp_reg_inst.append(-1)
@@ -824,20 +1105,20 @@ for a_n in ilp_stateful:
 		else:
 			ilp_sym_to_reg_act_num[v1.sym_reg_array_inst[sym_regs_used_acts[a][0]]] = [a_n]
 		#continue
-	if a in regs_used_acts:
+	if a in regs_used_acts:	# this could be non-symbolic regs or regs with symbolic size but NOT symbolic array of regs
 		if regs_used_acts[a][0] in v1.reg_inst:
 			ilp_reg_width.append(int(v1.reg_widths[regs_used_acts[a][0]].replace('bit<','').replace('>','')))
 			ilp_reg_inst.append(int(v1.reg_inst[regs_used_acts[a][0]]))
 		elif regs_used_acts[a][0] in v1.sym_reg_inst:
 			ilp_reg_width.append(int(v1.sym_reg_widths[regs_used_acts[a][0]].replace('bit<','').replace('>','')))
 			ilp_reg_inst.append(-1)
+			if v1.sym_reg_inst[regs_used_acts[a][0]] not in sym_to_reg_width:
+				sym_to_reg_width[v1.sym_reg_inst[regs_used_acts[a][0]]]=ilp_reg_width[-1]
 			if v1.sym_reg_inst[regs_used_acts[a][0]] in ilp_sym_to_reg_act_num:
 				ilp_sym_to_reg_act_num[v1.sym_reg_inst[regs_used_acts[a][0]]].append(a_n)
 			else:
 				ilp_sym_to_reg_act_num[v1.sym_reg_inst[regs_used_acts[a][0]]]=[a_n]
 
-
-#print ilp_sym_to_reg_act_num
 
 # stateful acts that share the same symbolic reg array
 # the size (# instances) of each reg array must be the same (bc indexed on same sym value)
@@ -919,11 +1200,11 @@ elif v1.switch_var in ilp_sym_to_act_num:
 
 ub = 0
 # utility function on ilp memory variables, upper bound is max memory in stg
-mem_per_stg = 1024
+mem_per_stg = 2097152
+#mem_per_stg = 32768
 if mem_var:
-	ub = mem_per_stg/sym_to_reg_width[v1.switch_var]
-
-
+	if v1.switch_var in sym_to_reg_width:
+		ub = mem_per_stg/sym_to_reg_width[v1.switch_var]
 # utility function on ilp act vars, upper bound is max alus in stg
 # CHECK IF STATELESS OR STATEFUL
 elif stateful:
@@ -931,7 +1212,7 @@ elif stateful:
 else:
 	ub = stateless_upper_bound
 
-x_vals = list(range(0,ub,v1.step_size))
+x_vals = list(range(0,ub,v1.step_size)) + [65536]
 y_vals = []
 
 for v in x_vals:
@@ -941,7 +1222,7 @@ for v in x_vals:
 		if v1.opt_keyword=="maximize":
 			y_v = -1*y_v
 		if v1.case_stmts[str(v)][1]:
-			y_vals.append(y_v*1000000)
+			y_vals.append(y_v*100000)
 		else:
 			y_vals.append(y_v)
 		continue
@@ -958,6 +1239,8 @@ for v in x_vals:
 
 #print y_vals
 
+print x_vals[-1]
+print y_vals[-1]/1000000
 
 with open("ilp_input.txt", "w") as f:
 	f.writelines("%s " % s for s in ilp_stateful)		# numbers of acts that are stateful
@@ -972,9 +1255,9 @@ with open("ilp_input.txt", "w") as f:
 	f.write("\n")
 	f.write(str(ilp_deps))					# list of deps
 	f.write("\n")
-	# TODO: TCAM ACT NUMS
+	f.writelines("%s " % ta for ta in ilp_tcam_acts)	# list of acts that use TCAM TODO: make this symbolic?
 	f.write("\n")
-	# TODO: TCAM SIZES
+	f.writelines("%s " % ts for ts in ilp_tcam_size)	# size for tcam tables
 	f.write("\n")
 	f.writelines("%s " % rw for rw in ilp_reg_width)	# width of each reg array (corresponding to stateful act nums)
 	f.write("\n")
@@ -984,7 +1267,7 @@ with open("ilp_input.txt", "w") as f:
 	f.write("\n")
 	f.write(str(act_num))					# total number of acts we have
 	f.write("\n")
-	f.writelines("%s " % ss for ss in ilp_same_size)	# list of reg arrays that must have same num of instances
+	f.writelines("%s " % str(ss).replace(" ","") for ss in ilp_same_size)	# list of reg arrays that must have same num of instances
 	f.write("\n")
 	f.write(str(total_req_meta))				# the amount of phv that's non-symbolic (required)
 	f.write("\n")
