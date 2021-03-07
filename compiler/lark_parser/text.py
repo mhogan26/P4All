@@ -1,4 +1,7 @@
 import sys
+import pdb
+import copy
+import math
 # we're not allowing symbolic reg sizes here (i.e., can't make regs wider)
 
 # ACTION EXPRESSIONS
@@ -126,7 +129,7 @@ reg_read: NAME DOT READ LPAREN write_field COMMA index_field RPAREN SEMICOLON
 sym_reg_write: SYM_ARRAY_NAME DOT WRITE LPAREN index_field COMMA read_field RPAREN SEMICOLON
 sym_reg_read: SYM_ARRAY_NAME DOT READ LPAREN write_field COMMA index_field RPAREN SEMICOLON
 hash_func: HASH LPAREN hash_index COMMA algo COMMA hash_num COMMA hash_list COMMA hash_num RPAREN SEMICOLON
-table_apply: NAME DOT APPLY LPAREN RPAREN SEMICOLON
+table_apply: NAME DOT APPLY LPAREN RPAREN SEMICOLON?
 
 utility_func: opt NAME LBRACE function step? RBRACE
 
@@ -157,17 +160,28 @@ lvalue: NAME
 expression: INT
 	  | TRUE
           | FALSE
+          | hdr_valid
           | expression PLUS expression
           | expression MINUS expression
 	  | NAME
 	  | SYM_ARRAY_NAME
 	  | META DOT META_NAME
           | META DOT SYM_ARRAY_NAME
-	  | HDR DOT HDR_NAME DOT HDR_FIELD	
+	  | HDR DOT HDR_NAME DOT HDR_FIELD (LPAREN RPAREN)?
           | expression LPAREN RPAREN 
 	  | expression LESSTHAN expression
 	  | expression GREATERTHAN expression
 	  | expression EQ expression
+	  | expression NEQ expression 
+	  | expression OR expression
+          | expression AND expression
+	  | table_hit
+	  | table_miss
+
+hdr_valid: HDR DOT HDR_NAME DOT VALID
+
+table_hit: table_apply DOT HIT
+table_miss: table_apply DOT MISS
 
 write_field: NAME
            | SYM_ARRAY_NAME
@@ -265,6 +279,12 @@ LPM: "lpm"
 SIZE: "size"
 DROP: "mark_to_drop"
 ELSE: "else"
+HIT: "hit"
+MISS: "miss"
+NEQ: "!="
+AND: "&&"
+OR: "||"
+VALID: "isValid()"
 
 NAME: (WORD|"_") (LETTER|INT|"_")*
 META_NAME: NAME
@@ -490,6 +510,8 @@ class Act_reads_writes(Visitor_Recursive):
 			if tree.children[0].type=="HDR":
 				self.reads.append(tree.children[2]+"."+tree.children[4])
 		if tree.data=="read_field":
+			if tree.children[0].type=="INT":
+				return
 			if tree.children[2].type=="META_NAME":
                                 self.reads.append(tree.children[2].value)
 			if tree.children[2].type=="SYM_ARRAY_NAME":
@@ -551,6 +573,7 @@ class Cond_reads(Visitor_Recursive):
         def __init__(self):
 		self.reads = []
 		self.sym_reads = []
+		self.table_checks = []
 	def __default__(self,tree):
 		if tree.data=="expression":
                 	if isinstance(tree.children[-1],Token):
@@ -558,9 +581,13 @@ class Cond_reads(Visitor_Recursive):
                                 	self.reads.append(tree.children[-1].value)
                         	if tree.children[-1].type=="SYM_ARRAY_NAME":
                                 	self.sym_reads.append(tree.children[-1].value)
+				if tree.children[0].type=="HDR":
+					self.reads.append(tree.children[2].value+".valid")
 				if tree.children[-1].type=="HDR_FIELD":
 					self.reads.append(tree.children[2].value+"."+tree.children[4].value)
 
+			if isinstance(tree.children[0],Tree) and isinstance(tree.children[0].children[0],Tree) and tree.children[0].children[0].data=="table_apply":
+				self.table_checks.append(tree.children[0].children[0].children[0].value)
 v1 = V_r1()
 v1.visit(parse_tree)
 #print v1.apply
@@ -596,45 +623,98 @@ v2.visit(v1.apply[0])	# assuming we only have one apply block in the v1.apply li
 #TODO: make this work if for loop w/in conditional
 #TODO: make this work for expressions directly in control? not in actions?
 def merge_dicts(x,y):
-	z = x.copy()
-	z.update(y)
-	return z
+	#if "ipv4_lpm" in x:
+	#	print "X"
+	#	print x["ipv4_lpm"]
+	#if "ipv4_lpm" in y:
+	#	print "Y"
+	#	print y["ipv4_lpm"]
+	#z = x.copy()
+	#z.update(y)
+	#return z
 
+	z = {}
+	for xk in x:
+		if xk in y.keys():
+			if x[xk]==y[xk]:
+				z[xk] = x[xk]
+			else:
+				z[xk] = x[xk]+y[xk]
+		else:
+			z[xk] = x[xk]
+	for yk in y:
+		if yk not in z.keys():
+			z[yk] = y[yk]
+
+	return z
 
 # TODO: GET ACTS THAT ARE IN THE SAME IF/ELSE BLOCKS
 # IF THEY'RE IN THE SAME BLOCK, THEN WE DON'T ERROR OUT IF THEY USE THE SAME REG
 # ONLY COUNT REG ONCE FOR THOSE ACTIONS (CHECK IF THEY'RE IN THE SAME IF/ELSE BLOCK)
 
-def get_expr_acts(ct,if_expr,expr_acts):
+def get_expr_acts(ct,if_expr,expr_acts,ch,counter):
+	counter += 1
+	#if ch:
+	#	print "START"
+	#	print counter
+	#	print expr_acts
+	#if ch and "ipv4_lpm" in expr_acts:
+	#	print expr_acts["ipv4_lpm"]
 	if_expr+=[ct.children[2]]
 	#print if_expr
 	for ct_c in ct.children:
 		if isinstance(ct_c,Token):
 			continue
+		#if ch:
+		#	print "FOR_LOOP"
+		#	print expr_acts
 		if ct_c.data=="block_stmt":
 			if ct_c.children[0].data=="conditional":
 				#print ct_c
-				merge_dicts(expr_acts,get_expr_acts(ct_c.children[0],if_expr,expr_acts))
+				#if ch and "ipv4_lpm" in expr_acts:
+				#	print "BEFORE"
+				#	print expr_acts["ipv4_lpm"]
+				n_expr_acts=merge_dicts(copy.deepcopy(expr_acts),get_expr_acts(ct_c.children[0],if_expr,copy.deepcopy(expr_acts),ch,counter))
+				expr_acts = n_expr_acts
+				#if ch and "ipv4_lpm" in expr_acts:
+				#	print "AFTER"
+                                #       print expr_acts["ipv4_lpm"]
 			elif ct_c.children[0].data=="table_apply":
+				#if ch:
+				#	print "IN"				
+				#	print if_expr
 				if ct_c.children[0].children[0].value not in expr_acts:
 					expr_acts[ct_c.children[0].children[0].value] = [if_expr]
 				else:
+					#if ch:
+					#	print "here"
 					expr_acts[ct_c.children[0].children[0].value].append(if_expr)
-
 			elif isinstance(ct_c.children[0].children[0],Tree) and ct_c.children[0].children[0].data=="lvalue":
 				#print "lv"
 				#print if_expr
 				#print expr_acts
+				#if ch:
+				#	print expr_acts["ipv4_lpm"]
 				if ct_c.children[0].children[0].children[0].value not in expr_acts:
 					expr_acts[ct_c.children[0].children[0].children[0].value]=[if_expr]
 				else:
 					expr_acts[ct_c.children[0].children[0].children[0].value].append(if_expr)
+	#if ch:
+	#	print expr_acts["ipv4_lpm"]
+
+	#if ch:
+	#	print "RETURN"
+	#	print counter
+	#	print expr_acts
+
 	return expr_acts
 
 conditionals = {}
 conditional_act_groups = []
+#print v2.t[6]
 for ct in v2.t:	# each of these is a conditional block
-	x=get_expr_acts(ct,[],conditionals)
+	ch = 0
+	x=get_expr_acts(ct,[],conditionals,ch,0)
 	if x.keys() not in conditional_act_groups:
 		conditional_act_groups.append(x.keys())
 	conditionals = x
@@ -648,6 +728,8 @@ for x in conditionals:
 			keep = v
 	conditionals[x] = keep
 
+
+#print conditional_act_groups
 '''
 v3 = Act_reads_writes()
 v3.visit(v1.action_defs['x'])
@@ -670,7 +752,10 @@ for t in v1.tables_match:
 	mat = []
 	for m in v1.tables_match[t].children:
 		if isinstance(m,Tree) and m.data=="lvalue":
-			mat.append(m.children[2].value+"."+m.children[4].value)
+			if m.children[0].type=="HDR":
+				mat.append(m.children[2].value+"."+m.children[4].value)
+			else:
+				mat.append(m.children[2].value)
 	v1.tables_match[t]=mat
 
 # get sizes for each meta declaration
@@ -713,6 +798,7 @@ sym_regs_used_acts = {}
 acts_writes = {}
 tables_acts_cond = {}
 for a in v2.stmts:
+	#print a
 	if "table_" in a:
 		t_r = []
 		t_w = []
@@ -724,7 +810,9 @@ for a in v2.stmts:
 		if a.replace("table_","") in conditionals:
 			for c in conditionals[a.replace("table_","")]:
 				vc = Cond_reads()
-				vc.visit(conditionals[a.replace("table_","")])
+				vc.visit(c)
+				#print vc.table_checks
+				#if len(vc.table_checks):
 				v1.tables_match[a.replace("table_","")]+=vc.reads
 		# go through each action in table --> read includes match field
 		# for now, assume don't have symbolic num of tables --> TODO: symbolic array of tables?
@@ -741,6 +829,7 @@ for a in v2.stmts:
 					t_re += v.regs
 					if ta not in stateful and len(v.regs) > 0:
 						stateful.append(ta)
+			acts_writes[ta] = list(set(t_w))
 		writes.append(set(t_w))
 		reads.append(set(t_r))
 		regs.append(set(t_re))
@@ -766,6 +855,11 @@ for a in v2.stmts:
 		for c in conditionals[a]:
 			vc = Cond_reads()
 			vc.visit(c)
+			#for tc in vc.table_checks:
+			#	a_r+=v1.tables_match[tc]
+			#	print reads[v2.stmts.index("table_"+tc)]
+			#	print writes[
+			#	print v1.tables_match[tc]
 			a_r+=vc.reads
 			s_r+=vc.sym_reads
 	if len(re)>0 and set(re) not in regs:
@@ -827,7 +921,9 @@ for a1 in v2.stmts:
 			continue			# don't care if they read from same fields bc can have concurrent reads
 		# read after write
 		if len(writes[a1_i].intersection(reads[a2_i])) > 0 and not ie:
-			if "table_" in a1:
+			if "table_" in a1 and "table_" in a2:
+				deps[(v1.tables_acts[a1.replace("table_","")][0],v1.tables_acts[a2.replace("table_","")][0])] = 1
+			elif "table_" in a1:
 				deps[(v1.tables_acts[a1.replace("table_","")][0],a2)] = 1
                         elif "table_" in a2:
                                 deps[(a1,v1.tables_acts[a2.replace("table_","")][0])] = 1
@@ -836,7 +932,9 @@ for a1 in v2.stmts:
 			#continue
 		# write after read
 		if len(reads[a1_i].intersection(writes[a2_i])) > 0 and not ie:
-                        if "table_" in a1:
+			if "table_" in a1 and "table_" in a2:
+				deps[(v1.tables_acts[a1.replace("table_","")][0],v1.tables_acts[a2.replace("table_","")][0])] = 1
+                        elif "table_" in a1:
                                 deps[(v1.tables_acts[a1.replace("table_","")][0],a2)] = 1
                         elif "table_" in a2:
                                 deps[(a1,v1.tables_acts[a2.replace("table_","")][0])] = 1
@@ -845,7 +943,9 @@ for a1 in v2.stmts:
                         #continue
 		# write after write
                 if len(writes[a1_i].intersection(writes[a2_i])) > 0 and not ie:
-                        if "table_" in a1:
+			if "table_" in a1 and "table_" in a2:
+				deps[(v1.tables_acts[a1.replace("table_","")][0],v1.tables_acts[a2.replace("table_","")][0])] = 1
+                        elif "table_" in a1:
                                 deps[(v1.tables_acts[a1.replace("table_","")][0],a2)] = 1
 			elif "table_" in a2:
 				deps[(a1,v1.tables_acts[a2.replace("table_","")][0])] = 1
@@ -910,17 +1010,23 @@ for t in v1.tables_acts:
 	if t_i==0:	# table is first thing in apply block, nothing modified before
 		continue
 	for a in v2.stmts[:t_i]:
-		for aw in acts_writes[a]:
-			if aw in v1.tables_match[t]:
-				for at in v1.tables_acts[t]:
-					deps[(a,at)]=1
+		if "table_" not in a:
+			for aw in acts_writes[a]:
+				if aw in v1.tables_match[t]:
+					for at in v1.tables_acts[t]:
+						deps[(a,at)]=1
 
+		else:
+			for at in v1.tables_acts[a.replace("table_","")]:
+				for aw in acts_writes[at]:
+					if aw in v1.tables_match[t]:
+						for at2 in v1.tables_acts[t]:
+							deps[(at,at2)]=1
 #v4_w_set = set(v4.writes)
 #v3_w_set = set(v3.writes)
 #print list(v3_w_set.intersection(v4_w_set))
 
 #print deps
-
 # maybe we do this in ILP? so we don't have to read from resource file multiple times?
 # we need to create mapping from action name to number (numbers used in ILP)
 # number corresponds to order they appear in control
@@ -1215,6 +1321,8 @@ else:
 x_vals = list(range(0,ub,v1.step_size)) + [65536]
 y_vals = []
 
+#x_vals = list(range(0,ub,100000)) + [mem_per_stg] + [4096,4096] + list(range(1,1024,10))
+#x_vals.sort()
 for v in x_vals:
 	if str(v) in v1.case_stmts:
 		f = lambda x: eval(v1.case_stmts[str(v)][0])
@@ -1241,6 +1349,17 @@ for v in x_vals:
 
 print x_vals[-1]
 print y_vals[-1]/1000000
+'''
+s = 1
+for xv in x_vals:
+	print xv
+	if 0<xv<=4096 and s:
+		y_vals.append((1 - math.exp(-float(2)*float(100)/float(xv)))**float(2))
+		if xv == 4096:
+			s = 0
+	else:
+		y_vals.append(100)
+'''
 
 with open("ilp_input.txt", "w") as f:
 	f.writelines("%s " % s for s in ilp_stateful)		# numbers of acts that are stateful
