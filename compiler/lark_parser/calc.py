@@ -1,4 +1,4 @@
-from ark import Lark, Transformer, v_args
+from lark import Lark, Transformer, v_args
 
 
 calc_grammar = """
@@ -11,8 +11,11 @@ calc_grammar = """
         | sum "+" exp   -> add
         | sum "-" exp   -> sub
 
-    ?exp: product
+    ?exp: summation
         | MATH "." EXP atom
+
+    ?summation: product
+	| "sum" "(" atom "," atom "," LAMBDA NAME ":" atom ")"
 
     ?product: atom
         | product "*" atom  -> mul
@@ -27,6 +30,7 @@ calc_grammar = """
     SCALE: "scale"
     MATH: "math"
     EXP: "exp"
+    LAMBDA: "lambda"
 
     %import common.CNAME -> NAME
     %import common.NUMBER
@@ -80,8 +84,23 @@ class InitTran(Transformer):
 	self.linear=0
 	return str(a)+"."+str(b)+"("+c+")"
 
+    def summation(self, a, b, c, d, e):
+	self.linear=0
+	low = 0
+	hi = 0
+	try:
+		low=int(a)
+	except ValueError:
+		low=a
+	try:
+		hi=int(b)
+	except ValueError:
+		hi=b
+	return "sum(map("+str(c)+" "+str(d)+": "+e+",range("+str(low)+","+str(hi)+")))"
 
-# add summation (is summation PWL??)
+
+# sum(start, stop, lambda x: (function))
+
 # if not PWL, need to return equation but with var replaced with ILP vars (quicksum of something?)
 # if multivariate, need to create mult ilp instances
 #	we know it's multivariate if symbolic includes range syntax/number of vars > 1
@@ -89,7 +108,7 @@ class InitTran(Transformer):
 calc_parser = Lark(calc_grammar, parser='lalr')
 #calc = calc_parser.parse
 
-tree = calc_parser.parse("scale((1-math.exp(-hashes*100/bits))**hashes)")
+tree = calc_parser.parse("sum(1,kv_items,lambda x: (1/x))")
 tran = InitTran()
 print tran.transform(tree)
 print tran.linear
