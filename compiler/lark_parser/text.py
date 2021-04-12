@@ -20,7 +20,7 @@ import math
 # ADD CONST VARS TO CONTROL BLOCK - WHERE CAN THESE BE USED? ARE THEY LOCAL TO AN ACTION?
 # ALLOW TYPEDEFS TO BE USED IN SYMBOLIC HEADER FIELDS?
 # SYMBOLIC HEADER FIELD (INSTEAD OF IN META??)
-# ASSUMING THAT AN ACTION HAS AT MOST HASH - SHOULD WE ALLOW FOR MORE?
+# ASSUMING THAT AN ACTION HAS AT MOST ONE HASH - SHOULD WE ALLOW FOR MORE?
 # ^ BUT WITH REG ACTIONS
 # ASSUME ONLY 1 STRUCT DEF (METADATA) - ALLOW MULTIPLE STRUCTS
 # UPDATE SAME_SIZE TO ALLOW FOR MULT SYMBOLIC ACTIONS TO ACCESS THE SAME SYM REG ARRAY
@@ -29,6 +29,8 @@ import math
 # FIX TABLE CODE SO THAT META FIELDS CAN ALSO BE MATCHED IN TABLE?
 # ACTION DEFINED ONCE BUT USED IN MULT TABLES - HOW TO DO THIS IN ILP?
 
+# IF SIMPLE UTIL, DON'T USE PWL
+# TRANSFORM ASSUME STMTS INTO ILP CONSTRAINTS
 # FOR LOOP IN CONDITIONAL???
 # ADD TYPECASTING TO HASH_NUM -> (bit<32>)
 # MARK TO DROP WRITES CERTAIN FIELDS
@@ -40,7 +42,7 @@ import math
 # FIX UPPER BOUND: IF ONE ACT IN LOOP IS STATEFUL, THEN THEY'RE ALL BOUND BY THAT
 # MULT LOOPS W/ DIFF SYM VALUE - DEP ANALYSIS WILL BE DIFFERENT (??)
 # FIX sym_reg_array_decl - instances doesn't always have to be symbolic (could be fixed size) - ILP ALSO DOES THIS
-from lark import Lark, Visitor, Token, Tree
+from lark import Lark, Visitor, Token, Tree, Transformer, v_args
 from lark.visitors import Visitor_Recursive
 
 # control block vars
@@ -56,6 +58,7 @@ topleveldecl: control_decl
 	    | utility_func
 
 variabledecl: sym_decl
+	    | assume_stmt
 	    | define
 	    | type_def
 
@@ -71,6 +74,8 @@ structfield: BIT_SIZE NAME SEMICOLON
 sym_structfield: BIT_SIZE "[" NAME "]" NAME SEMICOLON 
 
 sym_decl: SYMBOLIC NAME SEMICOLON
+assume_stmt: ASSUME LPAREN expression RPAREN SEMICOLON
+
 define: HT DEFINE CONST_NAME SIGNED_INT
 type_def: TYPEDEF BIT_SIZE TYPENAME SEMICOLON
 
@@ -83,7 +88,7 @@ controllocaldecl: action_decl
 		| sym_reg_array_decl
 		| table_decl
 
-action_decl: ACTION NAME LPAREN params? RPAREN "{" block_stmt+ "}"
+action_decl: ACTION NAME LPAREN params* RPAREN "{" block_stmt+ "}"
 sym_action_decl: ACTION NAME LPAREN RPAREN "[" "i" "]" "{" block_stmt+ "}"
 reg_decl: REGISTER "<" BIT_SIZE ">" LPAREN REG_DEPTH RPAREN NAME SEMICOLON
 sym_reg_decl: REGISTER "<" BIT_SIZE ">" LPAREN SYM_REG_DEPTH RPAREN NAME SEMICOLON
@@ -117,7 +122,7 @@ block_stmt: conditional
 	  | drop
 
 drop: DROP LPAREN RPAREN SEMICOLON
-conditional: IF LPAREN expression RPAREN LBRACE block_stmt+ RBRACE (ELSE IF LPAREN expression RPAREN LBRACE block_stmt+ RBRACE)? (ELSE LBRACE block_stmt+ RBRACE)?
+conditional: IF LPAREN expression RPAREN LBRACE block_stmt+ RBRACE (ELSE IF LPAREN expression RPAREN LBRACE block_stmt+ RBRACE)* (ELSE LBRACE block_stmt+ RBRACE)*
 
 
 method_call: lvalue LPAREN RPAREN SEMICOLON
@@ -140,16 +145,37 @@ opt: MAXIMIZE
 function: FUNCTION COLON func_def SEMICOLON
 
 func_def: switch
-	| python_func
+	| func
 
 switch: SWITCH NAME LBRACE cases+ RBRACE
-cases: CASE INT LBRACE SCALE? python_func RBRACE
-     | DEFAULT LBRACE SCALE? python_func RBRACE
+cases: CASE INT LBRACE SCALE? scalefun RBRACE
+     | DEFAULT LBRACE SCALE? scalefun RBRACE
 
 step: STEP COLON INT SEMICOLON
 
-python_func: PYTHONCODE
+func: scalefun
 
+?scalefun: sum 
+    | SCALE "(" sum ")" 
+?sum: exp
+    | sum "+" exp   -> add
+    | sum "-" exp   -> sub
+
+?exp: summation
+    | MATH "." EXP atom
+
+?summation: product
+    | "sum" "(" atom "," atom "," LAMBDA NAME ":" atom ")"
+
+?product: atom
+    | product "*" atom  -> mul
+    | product "/" atom  -> div
+    | product "**" atom -> pow
+
+?atom: NUMBER           -> number
+     | "-" atom         -> neg
+     | NAME             -> var
+     | "(" sum ")"
 
 lvalue: NAME
       | SYM_ARRAY_NAME
@@ -262,12 +288,14 @@ HDR: "hdr"
 MAXIMIZE: "maximize"
 MINIMIZE: "minimize"
 FUNCTION: "function"
-SCALE: "scale"
 STEP: "step"
 SWITCH: "switch"
 DEFAULT: "default"
 CASE: "case"
-PYTHONCODE: /.+/ 
+SCALE: "scale"
+MATH: "math"
+EXP: "exp"
+LAMBDA: "lambda"
 TABLE: "table"
 EQ: "=="
 DEFAULT_ACTION: "default_action"
@@ -285,8 +313,8 @@ NEQ: "!="
 AND: "&&"
 OR: "||"
 VALID: "isValid()"
+ASSUME: "assume"
 
-NAME: (WORD|"_") (LETTER|INT|"_")*
 META_NAME: NAME
 SYM_ARRAY_NAME: NAME "[" "i" "]"
 BIT_SIZE: "bit" "<" INT ">"
@@ -296,15 +324,19 @@ TYPENAME: NAME
 HDR_NAME: NAME
 HDR_FIELD: NAME
 
+%import common.CNAME -> NAME
 %import common.WS
 %import common.WORD
 %import common.LETTER
 %import common.INT
 %import common.CPP_COMMENT
+%import common.NUMBER
 %ignore WS
 %ignore CPP_COMMENT
 
 """
+
+# NAME: (WORD|"_") (LETTER|INT|"_")*
 
 p = Lark(grammar,parser="earley")
 
@@ -349,6 +381,8 @@ class V_r1(Visitor_Recursive):
 		self.tables_match = {}
 		self.tables_size = {}
 		self.symbolics = []
+		self.funcs = []
+		self.assumes = []
 	def __default__(self,tree):
 		if tree.data=="action_decl":
 			if isinstance(tree.children[4],Token):	# we have params in the action
@@ -398,6 +432,10 @@ class V_r1(Visitor_Recursive):
 			self.tables_size[tree.children[1].value] = tree.children[5].children[2].value
 		elif tree.data=="sym_decl":
 			self.symbolics.append(tree.children[1].value)
+		elif tree.data=="func":
+			self.funcs.append(tree.children[0])
+		elif tree.data=="assume_stmt":
+			self.assumes.append(tree.children)
 
 class V_r2(Visitor_Recursive):
 	def __init__(self, a_d):
@@ -588,6 +626,76 @@ class Cond_reads(Visitor_Recursive):
 
 			if isinstance(tree.children[0],Tree) and isinstance(tree.children[0].children[0],Tree) and tree.children[0].children[0].data=="table_apply":
 				self.table_checks.append(tree.children[0].children[0].children[0].value)
+
+
+# transformer for utilty function trees
+@v_args(inline=True)    # Affects the signatures of the methods
+class InitTran(Transformer):
+    def __init__(self):
+        self.vars = []
+        self.linear=1
+        self.num_vars=0
+        self.scale=0
+
+    #from operator import neg
+    number = float
+
+    def neg(self, a):
+        return "-"+a
+
+    def var(self, name):
+        self.num_vars+=1
+	self.vars.append(name[0:])
+        return name[0:]
+
+    def add(self, a, b):
+        return str(a)+"+"+str(b)
+
+    def sub(self, a, b):
+        return str(a)+"-"+str(b)
+
+    def mul(self, a, b):
+        self.linear=0
+        return str(a)+"*"+str(b)
+
+    def div(self, a, b):
+        self.linear=0
+        return str(a)+"/"+str(b)
+
+    def pow(self, a, b):
+        self.linear=0
+        return str(a)+"**"+str(b)
+
+    def scalefun(self,a,b):
+        self.scale=1
+        return b
+
+    def exp(self,a,b,c):
+        self.linear=0
+        return str(a)+"."+str(b)+"("+c+")"
+
+    def summation(self, a, b, c, d, e):
+        self.linear=0
+        low = 0
+        hi = 0
+        try:
+                low=int(a)
+        except ValueError:
+                low=a
+        try:
+                hi=int(b)
+        except ValueError:
+                hi=b
+        return "sum(map("+str(c)+" "+str(d)+": "+e+",range("+str(low)+","+str(hi)+")))"
+
+# sum(start, stop, lambda x: (function))
+
+# if not PWL, need to return equation but with var replaced with ILP vars (quicksum of something?)
+# if multivariate, need to create mult ilp instances
+#       we know it's multivariate if symbolic includes range syntax/number of vars > 1
+
+
+
 v1 = V_r1()
 v1.visit(parse_tree)
 #print v1.apply
@@ -609,6 +717,8 @@ v1.visit(parse_tree)
 #print v1.tables_acts
 #print v1.tables_match
 #print v1.tables_size
+#print v1.funcs
+#print v1.assumes
 
 v2 = V_r2(v1.action_defs)
 v2.visit(v1.apply[0])	# assuming we only have one apply block in the v1.apply list
@@ -759,6 +869,7 @@ for t in v1.tables_match:
 	v1.tables_match[t]=mat
 
 # get sizes for each meta declaration
+
 meta_sizes = {}
 sym_meta_sizes = {}
 total_req_meta=0
@@ -953,7 +1064,7 @@ for a1 in v2.stmts:
                                 deps[(a1,a2)]=1
                         #continue
 		# access same reg
-		if len(regs[a1_i].intersection(regs[a2_i])) > 0:
+		if len(regs[a1_i].intersection(regs[a2_i])) > 0 or (a1.replace("table_","") in regs_used_acts and a2.replace("table_","") in regs_used_acts and regs_used_acts[a1.replace("table_","")][0] in regs_used_acts[a2.replace("table_","")]):
 			if (a1,a2) in deps or (a1_t and (v1.tables_acts[a1.replace("table_","")][0],a2) in deps) or (a2_t and (a1,v1.tables_acts[a2.replace("table_","")][0]) in deps):
 				if a1==a2:
 					print "ERROR: symbolic action %s accesses the same non-symbolic register in different iterations"%(a1)
@@ -1120,6 +1231,7 @@ loop_name = {}
 # mapping symbolic value to action - this allows us to translate utility function that uses symbolic to util that uses ilp act vars
 # we only count the first action in a loop for the utility function
 # this shouldn't matter in the ILP bc we require that all acts in a loop get placed the same number of times
+#'''
 ilp_sym_to_act_num = {}
 for sym_loop in v2.loop_stmts:
 	ilp_sym_to_act_num[sym_loop] = []
@@ -1128,7 +1240,7 @@ for sym_loop in v2.loop_stmts:
 		curr_loop = []
 		for a in l:
 			if a.children[0].data=="conditional":
-				for act in a.children[0].children[5:-1]:
+				for act in a.children[0].children[5:-1]: 
 					a_name = act.children[0].children[0].children[0].value
 					loop_name[sym_loop].append(a_name)
 					for n in name_to_num[a_name]:
@@ -1143,6 +1255,9 @@ for sym_loop in v2.loop_stmts:
 				#if len(ilp_sym_to_act_num[sym_loop]) <= len(name_to_num[a_name]):
 				ilp_sym_to_act_num[sym_loop].append(n)
 		ilp_loops.append(curr_loop)
+#'''
+
+
 
 #print ilp_sym_to_act_num
 
@@ -1226,6 +1341,7 @@ for a_n in ilp_stateful:
 				ilp_sym_to_reg_act_num[v1.sym_reg_inst[regs_used_acts[a][0]]]=[a_n]
 
 
+
 # stateful acts that share the same symbolic reg array
 # the size (# instances) of each reg array must be the same (bc indexed on same sym value)
 # assume sym reg arrays ALWAYS have sym instances - THIS IS NOT ALWAYS TRUE!!! (TODO: update this)
@@ -1234,7 +1350,6 @@ for a_n in ilp_stateful:
 ilp_same_size = []
 for a in sym_regs_used_acts:
 	ilp_same_size.append(name_to_num[a])
-
 
 
 
@@ -1293,7 +1408,75 @@ mem_var = 0
 act_var = 0
 stateful = 0
 
-# replacing the switch_var with x in these functions to make it work with python better TODO: is there a way around this?
+#for fx in v1.funcs:
+	#print fx
+# PUT THIS IN LOOP FOR MULT OBJECTIVE FUNCS
+# TODO: HOW TO KNOW WHAT SYMBOLIC IS USED IN FUNCTION (if not switch stmt) (tran.vars)
+tran=InitTran()
+fu = tran.transform(v1.funcs[0]).replace(tran.vars[0],"symvar")
+fe = lambda symvar: eval(fu)
+
+# this assumes util functions with single variable
+# TODO: multivariate utils
+uvar = tran.vars[0]
+# this tells is if util applies to mem vars or act vars in ilp
+if uvar in ilp_sym_to_reg_act_num:
+	mem_var=1
+elif uvar in ilp_sym_to_act_num:
+	act_var=1
+	if ilp_sym_to_act_num[0] in stateful:
+		stateful=1
+
+
+# lower bound (lb) is inclusive, upper bound (ub) is exclusive
+ub = 0
+# utility function on ilp memory variables, upper bound is max memory in stg
+mem_per_stg = 2097152
+if mem_var:
+	if uvar in sym_to_reg_width:
+		ub = 1+mem_per_stg/sym_to_reg_width[uvar]
+# utility function on ilp act vars, upper bound is max alus in stg
+elif stateful:
+	ub = stateful_upper_bound+1
+else:
+	ub = stateless_upper_bound+1
+
+# x_vals 
+# TODO: tranform assume stmts? to just the stmt?
+# if > val, then start range from 1+val
+# if < val, then end range at val
+# if ==
+# if val < > val, then combo of first 2 cases
+#print v1.assumes
+lb = 0
+
+astmt = ["cols>0"]
+
+for a in astmt:
+	if "<"+uvar+"<" in a:
+		s = a.replace("<","").replace(">","").split(uvar)
+		# set lb
+		lb = int(s[0])+1
+		# set ub
+		ub = int(s[1])
+	elif uvar+">" in a or "<"+uvar in a:
+		# set lb
+		lb = int(a.replace(uvar,"").replace("<","").replace(">",""))+1
+	elif uvar+"<" in a or ">"+uvar in a:
+		# set ub
+		ub = int(a.replace(uvar,"").replace("<","").replace(">",""))
+
+x_vals = range(lb,ub,v1.step_size)
+y_vals = []
+
+for v in x_vals:
+	y_vals.append(fe(v))
+
+#exit()
+
+'''
+# SWITCH STMT UTIL FUNCTION
+# replacing the switch_var with x in these functions to make it work with python better TODO: is there a way around this? (see above)
 for c in v1.case_stmts:
 	v1.case_stmts[c] = (v1.case_stmts[c][0].replace(v1.switch_var,"x"),v1.case_stmts[c][1])
 
@@ -1318,9 +1501,12 @@ elif stateful:
 else:
 	ub = stateless_upper_bound
 
-x_vals = list(range(0,ub,v1.step_size)) + [65536]
+x_vals = list(range(1,ub,v1.step_size)) + [65536]
+#x_vals = []
 y_vals = []
 
+#for v in x_vals:
+	
 #x_vals = list(range(0,ub,100000)) + [mem_per_stg] + [4096,4096] + list(range(1,1024,10))
 #x_vals.sort()
 for v in x_vals:
@@ -1345,10 +1531,34 @@ for v in x_vals:
 			y_vals.append(y_v)
 		continue
 
-#print y_vals
+print y_vals
+'''
 
-print x_vals[-1]
-print y_vals[-1]/1000000
+'''
+# updated cms util
+# for vals from 1 to like 1/3 of values, make it  = 1
+# for other vals, use high step size and make obj = 3/cols
+
+x_vals_1 = range(1,16385,5000) + [16384]
+x_vals_2 = range(16384,65536,5000) + [65536]
+#x_vals_3 = range(40000,65536,5000)  + [65536]
+x_vals_3 = []
+y_vals_1 = []
+y_vals_2 = []
+y_vals_3 = []
+
+for v in x_vals_2:
+	y_vals_2.append(1)
+
+for v in x_vals_1:
+	y_vals_1.append(3.0/float(v))
+
+for v in x_vals_3:
+	y_vals_3.append(1)
+
+x_vals = x_vals_1 + x_vals_2 + x_vals_3
+y_vals = y_vals_1 + y_vals_2 + y_vals_3
+'''
 '''
 s = 1
 for xv in x_vals:
@@ -1360,6 +1570,7 @@ for xv in x_vals:
 	else:
 		y_vals.append(100)
 '''
+
 
 with open("ilp_input.txt", "w") as f:
 	f.writelines("%s " % s for s in ilp_stateful)		# numbers of acts that are stateful
@@ -1394,7 +1605,7 @@ with open("ilp_input.txt", "w") as f:
 	f.write("\n")
 	if mem_var: 						# our util func applies to memory ILP vars
 		f.write("mem\n")
-		f.writelines("%s " % mv for mv in ilp_sym_to_reg_act_num[v1.switch_var])	# numbers that correspond to ILP vars that we use for util
+		f.writelines("%s " % mv for mv in ilp_sym_to_reg_act_num[uvar])	# numbers that correspond to ILP vars that we use for util
 	elif act_var:						# our util func applies to act ILP vars
 		f.write("act\n")
 		f.writelines("%s " % av for av in ilp_sym_to_act_num[v1.switch_var])	# numbers that correspond to ILP vars
