@@ -10,4 +10,4 @@ ILP needs: utility function, upper bound on each symbolic value, list of statefu
 Utility function is written as a record with two parts: function and step (optional). Function can be single line or can be a switch statement, defining different functions for specific values. Function should be written in (limited) python syntax[+, -, *, /, \*\*, math.exp, sum(lo,hi,lambda func)].
 
 
-Assume statements: [<=, >=, ==] (to match the comparators allowed by Gurobi), one expression per statement
+Assume statements: [<=, >=, ==] (to match the comparators allowed by Gurobi), one expression per statement, only one symbolic per expression, expressions can only include a symbolic and an integer
