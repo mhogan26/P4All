@@ -29,6 +29,7 @@ import math
 # FIX TABLE CODE SO THAT META FIELDS CAN ALSO BE MATCHED IN TABLE?
 # ACTION DEFINED ONCE BUT USED IN MULT TABLES - HOW TO DO THIS IN ILP?
 
+# DEP ANALYSIS UPPER BOUND (GRAPH WALK)
 # IF SIMPLE UTIL, DON'T USE PWL
 # TRANSFORM ASSUME STMTS INTO ILP CONSTRAINTS
 # FOR LOOP IN CONDITIONAL???
@@ -183,24 +184,24 @@ lvalue: NAME
       | META DOT SYM_ARRAY_NAME
       | HDR DOT HDR_NAME DOT HDR_FIELD
 
-expression: INT
+expression: INT		-> intexp
 	  | TRUE
           | FALSE
           | hdr_valid
           | expression PLUS expression
           | expression MINUS expression
-	  | NAME
+	  | NAME	-> nexp
 	  | SYM_ARRAY_NAME
 	  | META DOT META_NAME
           | META DOT SYM_ARRAY_NAME
 	  | HDR DOT HDR_NAME DOT HDR_FIELD (LPAREN RPAREN)?
           | expression LPAREN RPAREN 
-	  | expression LESSTHAN expression
-	  | expression GREATERTHAN expression
-	  | expression EQ expression
-	  | expression NEQ expression 
-	  | expression OR expression
-          | expression AND expression
+	  | expression LESSTHAN expression	-> lexp
+	  | expression GREATERTHAN expression	-> gexp
+	  | expression EQ expression		-> eexp
+	  | expression NEQ expression 		-> neexp
+	  | expression OR expression		-> oexp
+          | expression AND expression		-> aexp
 	  | table_hit
 	  | table_miss
 
@@ -435,7 +436,7 @@ class V_r1(Visitor_Recursive):
 		elif tree.data=="func":
 			self.funcs.append(tree.children[0])
 		elif tree.data=="assume_stmt":
-			self.assumes.append(tree.children)
+			self.assumes.append(tree)
 
 class V_r2(Visitor_Recursive):
 	def __init__(self, a_d):
@@ -1392,13 +1393,40 @@ for a in sym_regs_used_acts:
 # if symbolic is in ilp_sym_to_reg_act_num, then we know it's mem vars, otherwise it's action
 #
 # we transform case statements into if/elses
-# we can do function calculation in here instead of ILP?? ilp really just needs list of x and y vals
-# we need to replace switch_var with x - so we can easily apply the function
-# for now, function should be in python syntax
+# we do function calculation in here instead of ILP (ilp really just needs list of x and y vals for PWL)
 # we'll need to get upper bound for cols somehow - use resources?
 # if memory variable, we need to use max mem in stg and max alus?
 #
 # step size - use this when creating x val list
+
+class AssumeTran(Transformer):
+	def assume_stmt(self,a):
+		return a[2]
+
+	def nexp(self, a):	# NAME
+		return a[0][0:]
+
+	def intexp(self,a):	# INT
+		return a[0][0:]
+
+	def gexp(self,a):	# greater than
+		return a[0]+">"+a[2]
+
+	def lexp(self,a):	# less than
+		return a[0]+"<"+a[2]	
+
+	def eexp(self,a):	# equal
+		return a[0]+"=="+a[2]
+
+	def neexp(self,a):	# !equal
+		return a[0]+"!="+a[2]
+
+astmt = []
+
+for a in v1.assumes:
+	atran = AssumeTran()
+	astmt.append(atran.transform(v1.assumes[0]))
+
 
 #opt = 'minimize'
 #switch_var = 'cols'
@@ -1430,6 +1458,7 @@ elif uvar in ilp_sym_to_act_num:
 
 # lower bound (lb) is inclusive, upper bound (ub) is exclusive
 ub = 0
+lb = 0
 # utility function on ilp memory variables, upper bound is max memory in stg
 mem_per_stg = 2097152
 if mem_var:
@@ -1442,15 +1471,11 @@ else:
 	ub = stateless_upper_bound+1
 
 # x_vals 
-# TODO: tranform assume stmts? to just the stmt?
 # if > val, then start range from 1+val
 # if < val, then end range at val
 # if ==
-# if val < > val, then combo of first 2 cases
-#print v1.assumes
-lb = 0
+# if val < < val, then combo of first 2 cases
 
-astmt = ["cols>0"]
 
 for a in astmt:
 	if "<"+uvar+"<" in a:
