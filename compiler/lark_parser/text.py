@@ -75,7 +75,7 @@ structfield: BIT_SIZE NAME SEMICOLON
 sym_structfield: BIT_SIZE "[" NAME "]" NAME SEMICOLON 
 
 sym_decl: SYMBOLIC NAME SEMICOLON
-assume_stmt: ASSUME LPAREN expression RPAREN SEMICOLON
+assume_stmt: ASSUME LPAREN a_expression RPAREN SEMICOLON
 
 define: HT DEFINE CONST_NAME SIGNED_INT
 type_def: TYPEDEF BIT_SIZE TYPENAME SEMICOLON
@@ -184,26 +184,33 @@ lvalue: NAME
       | META DOT SYM_ARRAY_NAME
       | HDR DOT HDR_NAME DOT HDR_FIELD
 
-expression: INT		-> intexp
+expression: INT
 	  | TRUE
           | FALSE
           | hdr_valid
           | expression PLUS expression
           | expression MINUS expression
-	  | NAME	-> nexp
+	  | NAME
 	  | SYM_ARRAY_NAME
 	  | META DOT META_NAME
           | META DOT SYM_ARRAY_NAME
 	  | HDR DOT HDR_NAME DOT HDR_FIELD (LPAREN RPAREN)?
           | expression LPAREN RPAREN 
-	  | expression LESSTHAN expression	-> lexp
-	  | expression GREATERTHAN expression	-> gexp
-	  | expression EQ expression		-> eexp
-	  | expression NEQ expression 		-> neexp
-	  | expression OR expression		-> oexp
-          | expression AND expression		-> aexp
+	  | expression LESSTHAN expression
+	  | expression GREATERTHAN expression
+	  | expression EQ expression
+	  | expression NEQ expression
+	  | expression OR expression
+          | expression AND expression
 	  | table_hit
 	  | table_miss
+
+
+a_expression: INT         					-> intexp
+	    | NAME        					-> nexp
+	    | a_expression EQ a_expression			-> eexp
+	    | a_expression LESSTHAN ASSIGN a_expression		-> lexp
+	    | a_expression GREATERTHAN ASSIGN a_expression	-> gexp
 
 hdr_valid: HDR DOT HDR_NAME DOT VALID
 
@@ -1410,16 +1417,13 @@ class AssumeTran(Transformer):
 		return a[0][0:]
 
 	def gexp(self,a):	# greater than
-		return a[0]+">"+a[2]
+		return a[0]+">="+a[3]
 
 	def lexp(self,a):	# less than
-		return a[0]+"<"+a[2]	
+		return a[0]+"<="+a[3]	
 
 	def eexp(self,a):	# equal
 		return a[0]+"=="+a[2]
-
-	def neexp(self,a):	# !equal
-		return a[0]+"!="+a[2]
 
 astmt = []
 
@@ -1456,6 +1460,7 @@ elif uvar in ilp_sym_to_act_num:
 		stateful=1
 
 
+# set lower and upper bounds for PWL functions (based on resources and/or assume stmts)
 # lower bound (lb) is inclusive, upper bound (ub) is exclusive
 ub = 0
 lb = 0
@@ -1470,133 +1475,38 @@ elif stateful:
 else:
 	ub = stateless_upper_bound+1
 
-# x_vals 
-# if > val, then start range from 1+val
-# if < val, then end range at val
+# if >= val, then start range from val
+# if <= val, then end range at val+1
 # if ==
-# if val < < val, then combo of first 2 cases
-
-
+# if val <= <= val, then combo of first 2 cases
 for a in astmt:
-	if "<"+uvar+"<" in a:
-		s = a.replace("<","").replace(">","").split(uvar)
+	if "<="+uvar+"<=" in a:
+		s = a.replace("<=","").replace(">=","").split(uvar)
 		# set lb
-		lb = int(s[0])+1
+		lb = int(s[0])
 		# set ub
-		ub = int(s[1])
-	elif uvar+">" in a or "<"+uvar in a:
+		ub = int(s[1])+1
+	elif uvar+">=" in a or "<="+uvar in a:
 		# set lb
-		lb = int(a.replace(uvar,"").replace("<","").replace(">",""))+1
-	elif uvar+"<" in a or ">"+uvar in a:
+		lb = int(a.replace(uvar,"").replace("<=","").replace(">=",""))
+	elif uvar+"<=" in a or ">="+uvar in a:
 		# set ub
-		ub = int(a.replace(uvar,"").replace("<","").replace(">",""))
+		ub = int(a.replace(uvar,"").replace("<=","").replace(">=",""))+1
 
-x_vals = range(lb,ub,v1.step_size)
+x_vals = range(lb,ub,v1.step_size)	# we generate list of x vals from bounds and step size
 y_vals = []
 
+# evaluate the function for each x val to corresponding y val for PWL function
 for v in x_vals:
 	y_vals.append(fe(v))
 
-#exit()
-
-'''
-# SWITCH STMT UTIL FUNCTION
-# replacing the switch_var with x in these functions to make it work with python better TODO: is there a way around this? (see above)
-for c in v1.case_stmts:
-	v1.case_stmts[c] = (v1.case_stmts[c][0].replace(v1.switch_var,"x"),v1.case_stmts[c][1])
-
-if v1.switch_var in ilp_sym_to_reg_act_num:
-	mem_var = 1
-elif v1.switch_var in ilp_sym_to_act_num:
-	act_var = 1
-	if ilp_sym_to_act_num[0] in stateful:
-		stateful = 1
-
-ub = 0
-# utility function on ilp memory variables, upper bound is max memory in stg
-mem_per_stg = 2097152
-#mem_per_stg = 32768
-if mem_var:
-	if v1.switch_var in sym_to_reg_width:
-		ub = mem_per_stg/sym_to_reg_width[v1.switch_var]
-# utility function on ilp act vars, upper bound is max alus in stg
-# CHECK IF STATELESS OR STATEFUL
-elif stateful:
-	ub = stateful_upper_bound	
-else:
-	ub = stateless_upper_bound
-
-x_vals = list(range(1,ub,v1.step_size)) + [65536]
-#x_vals = []
-y_vals = []
-
-#for v in x_vals:
-	
-#x_vals = list(range(0,ub,100000)) + [mem_per_stg] + [4096,4096] + list(range(1,1024,10))
-#x_vals.sort()
-for v in x_vals:
-	if str(v) in v1.case_stmts:
-		f = lambda x: eval(v1.case_stmts[str(v)][0])
-		y_v = f(v)
-		if v1.opt_keyword=="maximize":
-			y_v = -1*y_v
-		if v1.case_stmts[str(v)][1]:
-			y_vals.append(y_v*100000)
-		else:
-			y_vals.append(y_v)
-		continue
-	else:
-		f = lambda x: eval(v1.case_stmts['default'][0])
-		y_v = f(v)
-                if v1.opt_keyword=="maximize":
-                        y_v = -1*y_v
-		if v1.case_stmts['default'][1]:
-			y_vals.append(y_v*1000000)
-		else:
-			y_vals.append(y_v)
-		continue
-
-print y_vals
-'''
-
-'''
-# updated cms util
-# for vals from 1 to like 1/3 of values, make it  = 1
-# for other vals, use high step size and make obj = 3/cols
-
-x_vals_1 = range(1,16385,5000) + [16384]
-x_vals_2 = range(16384,65536,5000) + [65536]
-#x_vals_3 = range(40000,65536,5000)  + [65536]
-x_vals_3 = []
-y_vals_1 = []
-y_vals_2 = []
-y_vals_3 = []
-
-for v in x_vals_2:
-	y_vals_2.append(1)
-
-for v in x_vals_1:
-	y_vals_1.append(3.0/float(v))
-
-for v in x_vals_3:
-	y_vals_3.append(1)
-
-x_vals = x_vals_1 + x_vals_2 + x_vals_3
-y_vals = y_vals_1 + y_vals_2 + y_vals_3
-'''
-'''
-s = 1
-for xv in x_vals:
-	print xv
-	if 0<xv<=4096 and s:
-		y_vals.append((1 - math.exp(-float(2)*float(100)/float(xv)))**float(2))
-		if xv == 4096:
-			s = 0
-	else:
-		y_vals.append(100)
-'''
 
 
+# we need to translate assume statements to ILP constraints
+
+
+
+# write info to a file for ILP to use
 with open("ilp_input.txt", "w") as f:
 	f.writelines("%s " % s for s in ilp_stateful)		# numbers of acts that are stateful
 	f.write("\n")
