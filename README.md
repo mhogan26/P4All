@@ -8,3 +8,6 @@ ILP needs: utility function, upper bound on each symbolic value, list of statefu
 
 
 Utility function is written as a record with two parts: function and step (optional). Function can be single line or can be a switch statement, defining different functions for specific values. Function should be written in (limited) python syntax[+, -, *, /, \*\*, math.exp, sum(lo,hi,lambda func)].
+
+
+Assume statements: [<=, >=, ==], one expression per statement
