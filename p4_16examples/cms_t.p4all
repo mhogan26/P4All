@@ -1,0 +1,84 @@
+symbolic rows;
+symbolic cols;
+assume(cols>=1);
+
+typedef bit<32> ip4Addr_t;
+
+
+header ipv4_t {
+    bit<4>    version;
+    bit<4>    ihl;
+    bit<8>    diffserv;
+    bit<16>   totalLen;
+    bit<16>   identification;
+    bit<3>    flags;
+    bit<13>   fragOffset;
+    bit<8>    ttl;
+    bit<8>    protocol;
+    bit<16>   hdrChecksum;
+    ip4Addr_t srcAddr;
+    ip4Addr_t dstAddr;
+}
+
+
+struct custom_metadata_t {
+	bit<32> count_min;
+	bit<32>[rows] index;
+	bit<32>[rows] count;	
+}
+
+
+struct headers {
+    ipv4_t       ipv4;
+}
+
+
+control MyIngress {
+
+        Hash<bit<32>>(HashAlgorithm_t.CRC32)[rows] hash_TCP;
+        action calc_hashed_index_TCP()[i] {
+            meta.index[i]=hash_TCP[i].get({get_seed(),hdr.ipv4.src_addr,get_seed(),hdr.ipv4.dst_addr,get_seed(),hdr.tcp.src_port,get_seed(),hdr.tcp.dst_port});
+        }
+
+
+	Register<bit<32>,_>(cols)[rows] cms_row;
+	RegisterAction<bit<32>, _, bit<32>> (cms_row[i]) row_inc[i] = {
+            void apply(inout bit<32> val, out bit<32> rv) {
+                val = val + 1;
+                rv = val;
+            }
+        };
+        action cms_inc()[i] {
+            meta.count[i]=row_inc.execute(meta.index[i]);
+        }
+
+
+	action init_min() {
+	    meta.min = 0;
+	}
+
+
+
+	apply {
+		init_min();
+		for (i < rows) {
+			calc_hashed_index_TCP()[i];
+		}
+		for (i < rows) {
+			cms_inc()[i];
+		}
+    		// finding min
+    		for (i < rows) {
+			meta.min = min(meta.min,meta.count[i]);
+    		}
+
+	}
+}
+
+optimize cms_util {
+	function: 3/cols;
+	step: 32000;
+}
+
+minimize cms_util;
+
