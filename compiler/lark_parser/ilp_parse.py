@@ -756,8 +756,8 @@ def write_pwl_to_ilp_file(ilp_stateful, ilp_meta, ilp_meta_sizes, ilp_groups, il
         	f.write("\n")
         	f.writelines("%s " % rw for rw in ilp_reg_width)        # width of each reg array (corresponding to stateful act nums)
         	f.write("\n")
-        	f.write("1")                                            # utililty provided? TODO: get rid of this
-        	f.write("\n")  
+        	#f.write("1")                                            # utililty provided? TODO: get rid of this
+        	#f.write("\n")  
         	f.writelines("%s " % h for h in ilp_hashes)             # nums of acts that hash
         	f.write("\n")
         	f.write(str(act_num))                                   # total number of acts we have
