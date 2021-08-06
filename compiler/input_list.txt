@@ -1,0 +1,18 @@
+stateful actions (actions that access a register)
+actions that use symbolic metadata
+sizes of each instance of symbolic metadata field
+symbolic actions that must be placed together (all or nothing; e.g., actions in same iteration of for loop)
+list of actions grouped together by loop
+dependencies (actions that use same reg array, actions in if/else blocks, actions associated with same TCAM table)
+actions that use TCAM
+sizes for all TCAM tables (-1 is symbolic)
+width of register arrays
+actions that use hashing (at most 1 per action)
+total number of actions
+list of symbolic register arrays that have to be same size (use same symbolic value)
+size of non-symbolic phv
+sizes of all register arrays (-1 is symbolic)
+memory or action variables for objective
+variable numbers for objective (PWL)
+objective function x values (PWL)
+objective function y values (PWL)
