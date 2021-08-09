@@ -61,9 +61,9 @@ start: p4allprogram+
 p4allprogram: topleveldecl
             | variabledecl
             | derivedtypedecl
-	    | includes
-	    | switch_main
-	    | switch_pipeline
+            | includes
+            | switch_main
+            | switch_pipeline
 
 topleveldecl: control_decl
             | utility_func
@@ -77,13 +77,14 @@ variabledecl: sym_decl
 derivedtypedecl: struct_decl
                | header_decl
 
-includes: HT INCLUDE "<" NAME DOT P4 ">"
+includes: HT INCLUDE LESSTHAN NAME DOT P4 GREATERTHAN
+        | HT INCLUDE DOUBLEQUOTE NAME DOT P4 DOUBLEQUOTE
 struct_decl: STRUCT NAME LBRACE (sym_structfield|structfield)+ RBRACE 
 header_decl: HEADER NAME LBRACE (sym_structfield|structfield)+ RBRACE
 
 structfield: BIT_SIZE NAME SEMICOLON 
            | TYPENAME NAME SEMICOLON
-sym_structfield: BIT_SIZE "[" NAME "]" NAME SEMICOLON 
+sym_structfield: sym_size "[" NAME "]" NAME SEMICOLON 
 
 sym_decl: SYMBOLIC NAME SEMICOLON
 assume_stmt: ASSUME LPAREN a_expression RPAREN SEMICOLON
@@ -92,7 +93,7 @@ define: HT DEFINE CONST_NAME SIGNED_INT
 type_def: TYPEDEF BIT_SIZE TYPENAME SEMICOLON
 
 control_decl: CONTROL NAME LPAREN direction HDRT NAME COMMA direction METAT NAME COMMA direction I_IMETA NAME COMMA direction I_IPMETA NAME COMMA direction I_IDMETA NAME COMMA direction I_ITMETA NAME RPAREN LBRACE control_block RBRACE
-	    | CONTROL NAME LPAREN direction HDRT NAME COMMA direction METAT NAME COMMA direction E_IMETA NAME COMMA direction E_IPMETA NAME COMMA direction E_IDMETA NAME COMMA direction E_ITMETA NAME LBRACE control_block RBRACE
+            | CONTROL NAME LPAREN direction HDRT NAME COMMA direction METAT NAME COMMA direction E_IMETA NAME COMMA direction E_IPMETA NAME COMMA direction E_IDMETA NAME COMMA direction E_ITMETA NAME LBRACE control_block RBRACE
 
 control_block: controllocaldecl* apply_block
 controllocaldecl: action_decl
@@ -104,6 +105,7 @@ controllocaldecl: action_decl
                 | table_decl
                 | hash_decl
                 | sym_hash_decl
+                | stage_pragma
 
 action_decl: ACTION NAME LPAREN params* RPAREN LBRACE act_block_stmt+ RBRACE
 sym_action_decl: ACTION NAME LPAREN RPAREN "[" "i" "]" LBRACE act_block_stmt+ RBRACE
@@ -114,7 +116,12 @@ sym_reg_act_decl: REGACT "<" BIT_SIZE COMMA "_" COMMA BIT_SIZE ">" LPAREN SYM_AR
 apply_block: APPLY "{" block_stmt+ "}"
 table_decl: TABLE NAME LBRACE key actions size default? entries? RBRACE
 hash_decl: HASH "<" BIT_SIZE ">" LPAREN algo RPAREN NAME SEMICOLON
-sym_hash_decl: HASH "<" BIT_SIZE ">" LPAREN algo RPAREN "[" NAME "]" NAME SEMICOLON
+sym_hash_decl: HASH "<" sym_size ">" LPAREN algo RPAREN "[" NAME "]" NAME SEMICOLON
+stage_pragma: AT PRAGMA STAGE INT
+
+sym_size: BIT_SIZE
+        | sym_bit_size
+sym_bit_size: "bit<" NAME ">"
 
 reg_depth: INT
          | NAME
@@ -125,8 +132,8 @@ direction: IN
          | OUT
          | INOUT 
 
-params: (BIT_SIZE|NAME) NAME	-> type_param
-      | params COMMA params	-> param_list
+params: (BIT_SIZE|NAME) NAME    -> type_param
+      | params COMMA params     -> param_list
 
 key: KEY ASSIGN LBRACE (lvalue COLON match_type SEMICOLON)+ RBRACE
 actions: ACTIONS ASSIGN LBRACE (NAME SEMICOLON)+ RBRACE
@@ -134,19 +141,20 @@ size: SIZE ASSIGN (INT|NAME) SEMICOLON
 default: DEFAULT_ACTION ASSIGN NAME LPAREN RPAREN SEMICOLON
 entries: CONST ENTRIES ASSIGN LBRACE entry+ RBRACE
 entry: LPAREN? match RPAREN? COLON method_call 
-match: "0x" (INT|LETTER)+ 
+match: HEX (INT|LETTER)+ 
+     | match COMMA match
 match_type: EXACT
-     	  | TERNARY
-     	  | LPM
+          | TERNARY
+          | LPM
 
 act_block_stmt: method_call
-	      | sym_method_call
-	      | assignment
-	      | reg_act_exec
+              | sym_method_call
+              | assignment
+              | reg_act_exec
               | sym_reg_act_exec
-	      | hash_func
-	      | sym_hash_func
-	      | drop
+              | hash_func
+              | sym_hash_func
+              | drop
 
 block_stmt: conditional
           | method_call
@@ -210,32 +218,33 @@ func: scalefun
      | NAME             -> var
      | "(" sum ")"
 
-lvalue: NAME					-> nonsym_l
-      | SYM_ARRAY_NAME				-> sym_l
-      | meta DOT META_NAME 			-> nonsymmeta_l
-      | meta DOT SYM_ARRAY_NAME			-> symmeta_l
-      | HDR DOT HDR_NAME DOT HDR_FIELD		-> nonsymhdr_l
-      | HDR DOT HDR_NAME DOT SYM_ARRAY_NAME	-> symhdr_l
+lvalue: NAME                                    -> nonsym_l
+      | SYM_ARRAY_NAME                          -> sym_l
+      | meta DOT META_NAME                      -> nonsymmeta_l
+      | meta DOT SYM_ARRAY_NAME                 -> symmeta_l
+      | HDR DOT HDR_NAME DOT HDR_FIELD          -> nonsymhdr_l
+      | HDR DOT HDR_NAME DOT SYM_ARRAY_NAME     -> symhdr_l
 
-expression: INT							-> e_int
-          | TRUE						-> e_true
-          | FALSE						-> e_false
+expression: INT                                                 -> e_int
+          | HEX (INT|LETTER)+                                   -> e_hex
+          | TRUE                                                -> e_true
+          | FALSE                                               -> e_false
           | hdr_valid
-          | expression PLUS expression				-> e_plus
-          | expression MINUS expression				-> e_minus
-          | NAME						-> e_name
-          | SYM_ARRAY_NAME					-> e_symname
-          | meta DOT META_NAME					-> e_meta
-          | meta DOT SYM_ARRAY_NAME				-> e_symmeta
-          | HDR DOT HDR_NAME DOT HDR_FIELD (LPAREN RPAREN)?	-> e_hdr
+          | expression PLUS expression                          -> e_plus
+          | expression MINUS expression                         -> e_minus
+          | NAME                                                -> e_name
+          | SYM_ARRAY_NAME                                      -> e_symname
+          | meta DOT META_NAME                                  -> e_meta
+          | meta DOT SYM_ARRAY_NAME                             -> e_symmeta
+          | HDR DOT HDR_NAME DOT HDR_FIELD (LPAREN RPAREN)?     -> e_hdr
           | HDR DOT HDR_NAME DOT SYM_ARRAY_NAME (LPAREN RPAREN)?     -> e_symhdr
-          | expression LPAREN RPAREN 				-> e_p
-          | expression LESSTHAN expression			-> e_less
-          | expression GREATERTHAN expression			-> e_greater
-          | expression EQ expression				-> e_eq
-          | expression NEQ expression				-> e_neq
-          | expression OR expression				-> e_or
-          | expression AND expression				-> e_and
+          | expression LPAREN RPAREN                            -> e_p
+          | expression LESSTHAN expression                      -> e_less
+          | expression GREATERTHAN expression                   -> e_greater
+          | expression EQ expression                            -> e_eq
+          | expression NEQ expression                           -> e_neq
+          | expression OR expression                            -> e_or
+          | expression AND expression                           -> e_and
           | table_hit
           | table_miss
           | min
@@ -255,22 +264,23 @@ hdr_valid: HDR DOT HDR_NAME DOT VALID
 table_hit: table_apply DOT HIT
 table_miss: table_apply DOT MISS
 
-index_field: NAME					-> i_name
-           | SYM_ARRAY_NAME				-> i_symname
-           | meta DOT META_NAME 			-> i_meta
-           | meta DOT SYM_ARRAY_NAME			-> i_symmeta
-           | HDR DOT HDR_NAME DOT HDR_FIELD		-> i_hdr
-	   | HDR DOT HDR_NAME DOT SYM_ARRAY_NAME	-> i_symhdr
-           | INT					-> i_int
+index_field: NAME                                       -> i_name
+           | SYM_ARRAY_NAME                             -> i_symname
+           | meta DOT META_NAME                         -> i_meta
+           | meta DOT SYM_ARRAY_NAME                    -> i_symmeta
+           | HDR DOT HDR_NAME DOT HDR_FIELD             -> i_hdr
+           | HDR DOT HDR_NAME DOT SYM_ARRAY_NAME        -> i_symhdr
+           | INT                                        -> i_int
 
 hash_list: LBRACE hash_fields RBRACE 
 
-hash_fields: meta DOT META_NAME				-> nonsymmeta
-           | meta DOT SYM_ARRAY_NAME			-> symmeta
-           | HDR DOT HDR_NAME DOT HDR_FIELD		-> nonsymhdr
-	   | HDR DOT HDR_NAME DOT SYM_ARRAY_NAME	-> symhdr
-           | hash_fields COMMA hash_fields		-> hlist
-	   | GET_SEED					-> seed
+hash_fields: meta DOT META_NAME                         -> nonsymmeta
+           | meta DOT SYM_ARRAY_NAME                    -> symmeta
+           | HDR DOT HDR_NAME DOT HDR_FIELD             -> nonsymhdr
+           | HDR DOT HDR_NAME DOT SYM_ARRAY_NAME        -> symhdr
+           | hash_fields COMMA hash_fields              -> hlist
+           | GET_SEED                                   -> seed
+           | SIGNED_INT                                 -> s_int
 
 algo: HASH_A DOT IDENTITY
     | HASH_A DOT RANDOM
@@ -293,6 +303,7 @@ meta: IG_META
     | EG_DEP_META
     | IG_TM_META
     | EG_TM_META
+
 
 TYPEDEF: "typedef"
 SYMBOLIC: "symbolic"
@@ -346,6 +357,7 @@ SIGNED_INT: INT ("w"|"s") INT
 CONST_NAME: NAME
 LESSTHAN: "<"
 GREATERTHAN: ">"
+DOUBLEQUOTE: /"/
 HDR: "hdr"
 MAXIMIZE: "maximize"
 MINIMIZE: "minimize"
@@ -407,7 +419,10 @@ E_IDMETA: "egress_intrinsic_metadata_for_deparser_t"
 I_ITMETA: "ingress_intrinsic_metadata_for_tm_t"
 E_ITMETA: "egress_intrinsic_metadata_for_tm_t"
 GET_SEED: "get_seed()"
-
+AT: "@"
+PRAGMA: "pragma"
+STAGE: "stage"
+HEX: "0x"
 
 %import common.CNAME -> NAME
 %import common.WS
@@ -430,13 +445,13 @@ unroll = False
 
 concretes = {}
 
-if len(sys.argv) > 2:	# we're unrolling the p4all program --> p4 code
-	unroll = True
-	for i in range(2,len(sys.argv)):
-		if i%2==0:	# name of symbolic
-			concretes[sys.argv[i]] = 0
-		else:		# concrete val
-			concretes[sys.argv[i-1]] = int(sys.argv[i])
+if len(sys.argv) > 2:   # we're unrolling the p4all program --> p4 code
+        unroll = True
+        for i in range(2,len(sys.argv)):
+                if i%2==0:      # name of symbolic
+                        concretes[sys.argv[i]] = 0
+                else:           # concrete val
+                        concretes[sys.argv[i-1]] = int(sys.argv[i])
 
 with open(sys.argv[1], 'r') as file:
     data = file.read()
@@ -446,27 +461,40 @@ parse_tree = p.parse(data)
 #print( parse_tree.pretty() )
 #print parse_tree
 
-if not unroll:
-	ilp_parse(parse_tree)
-	exit()
+#if not unroll:
+#       ilp_parse(parse_tree)
+#       exit()
 
 #print( parse_tree.pretty() )
 remove_sym = SymTran(concretes)
 no_sym = remove_sym.transform(parse_tree)
 #remove_sym_acts = SymActUnroll(remove_sym.lines, remove_sym.con_acts, remove_sym.acts_post, remove_sym.acts_index)
 #remove_sym_acts.unroll()
-for i in remove_sym.lines:
-	print i,
-#print "AFTER\n"
-#print( no_sym )
+#for i in remove_sym.lines:
+#        print i,
 
-#recon_code = Reconstructor(p, {'_WS': special, '_NEWLINE': newline, '_IGNORE': ignore}).reconstruct(parse_tree)
-#print recon_code
+li = []
+with open('p4src/cms/parsers_temp.p4','r') as f:
+    li = f.readlines()
+    for l in li:
+        if "//METAS" in l:
+            li[li.index(l)+1] = ''.join(remove_sym.metas)
+
+    #print li
+    #f.writelines(li)
+with open('p4src/cms/parsers.p4','w') as f:
+    for l in li:
+        f.write(l)
+
+
+lines = ''.join(remove_sym.lines)
+with open(sys.argv[1].replace(".p4all",".p4"),'w+') as f:
+    f.write(lines)
+
 
 # to generate p4 code:
 # remove symbolic declarations and assume statements
 # remove utility function/simulation record
-
 # unroll symbolic metadata arrays / replace symbolic meta sizes
 # (unroll symbolic header field arrays?)
 # unroll symbolic hash declarations
@@ -477,10 +505,5 @@ for i in remove_sym.lines:
 # unroll symbolic actions
 # unroll symbolic tables
 # unroll for loops in apply block
-
-
-
-
-
 
 
