@@ -41,9 +41,16 @@ control SwitchIngress(inout header_t hdr,
                 ig_md.count[i]=inc_cms[i].execute(ig_md.index[i]);
         }
 
+	action init_min() {
+		ig_md.min=0xffffffff;
+	}
+
+	action find_min()[i] {
+		ig_md.min=min(ig_md.min,ig_md.count[i]);
+	}
 
         apply {
-                ig_md.min=0xffffffff;
+                init_min();
                 for (i < rows) {
                         calc_hash()[i];
                 }
@@ -53,7 +60,7 @@ control SwitchIngress(inout header_t hdr,
                 }
 
                 for (i < rows) {
-                        ig_md.min=min(ig_md.min,ig_md.count[i]);
+                        find_min();
                 }
 
         }
@@ -66,9 +73,11 @@ Switch(pipe)main;
 
 
 
-minimize cms_util {
+optimize cms_obj {
 	function: 3/cols;
 	step: 32000;
 }
+
+minimize cms_obj;
 
 
