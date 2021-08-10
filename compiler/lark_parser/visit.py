@@ -59,9 +59,9 @@ class V_r1(Visitor_Recursive):
                                 self.reg_widths[tree.children[7].value]=tree.children[1].value
                                 self.reg_inst[tree.children[7].value]=tree.children[5].children[0].value
                 elif tree.data=="sym_reg_array_decl":
-                        self.sym_reg_array_widths[tree.children[8].value]=tree.children[1].value
-                        self.sym_reg_array_inst[tree.children[8].value]=tree.children[5].children[0].value
-                        self.sym_reg_array_length[tree.children[8].value] = tree.children[7].value
+                        self.sym_reg_array_widths[tree.children[7].value]=tree.children[1].value
+                        self.sym_reg_array_inst[tree.children[7].value]=tree.children[4].children[0].value
+                        self.sym_reg_array_length[tree.children[7].value] = tree.children[6].value
                 elif tree.data=="opt_expr":
                         self.opt_keyword = tree.children[0].children[0].value
                         self.util.append(tree)
