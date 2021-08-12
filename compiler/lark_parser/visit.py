@@ -35,14 +35,15 @@ class V_r1(Visitor_Recursive):
                 self.symbolics = []
                 self.funcs = []
                 self.assumes = []
+		self.regact_to_name = {}
         def __default__(self,tree):
                 if tree.data=="action_decl":
                         if isinstance(tree.children[4],Token):  # we have params in the action
-                                self.action_defs[tree.children[1].value]=tree.children[5:]
+                                self.action_defs[tree.children[1].value]=tree.children[5:-1]
                         else:
-                                self.action_defs[tree.children[1].value]=tree.children[4:]
+                                self.action_defs[tree.children[1].value]=tree.children[4:-1]
                 elif tree.data=="sym_action_decl":
-                        self.action_defs[tree.children[1].value]=tree.children[4:]
+                        self.action_defs[tree.children[1].value]=tree.children[5:-1]
                 elif tree.data=="apply_block":
                         self.apply.append(tree)
                 elif tree.data=="type_def":
@@ -77,6 +78,8 @@ class V_r1(Visitor_Recursive):
                         self.funcs.append(tree.children[2].children[0])
                 elif tree.data=="assume_stmt":
                         self.assumes.append(tree)
+		elif tree.data=="reg_act_decl" or tree.data=="sym_reg_act_decl":
+			self.regact_to_name[tree.children[8].value] = tree.children[6].value
 
 
 class V_r2(Visitor_Recursive):
@@ -153,7 +156,7 @@ class V_r2(Visitor_Recursive):
 # AND CHECKS REG READS/WRITES - READ FROM/WRITE TO META
 # is it safe to hardcode some the children indices?
 class Act_reads_writes(Visitor_Recursive):
-        def __init__(self,hashes,name):
+        def __init__(self,hashes,name, regact_to_name):
                 self.reads = []
                 self.writes = []
                 self.sym_reads = []
@@ -162,8 +165,70 @@ class Act_reads_writes(Visitor_Recursive):
                 self.sym_regs = []
                 self.hashes=hashes
                 self.name = name
+		self.regact_to_name = regact_to_name
         def __default__(self,tree):
-                # check lvalue to find meta fields we're writing to
+		# index_field
+		if tree.data=="i_meta":
+			self.reads.append(tree.children[0].children[0].value+tree.children[1].value+tree.children[2].value)	
+                if tree.data=="i_symmeta":
+			self.sym_reads.append(tree.children[0].children[0].value+tree.children[1].value+tree.children[2].value)			
+                if tree.data=="i_hdr":
+			self.reads.append(tree.children[0].value+tree.children[1].value+tree.children[2].value+tree.children[3].value+tree.children[4].value)
+                if tree.data=="i_symhdr":
+			self.sym_reads.append(tree.children[0].value+tree.children[1].value+tree.children[2].value+tree.children[3].value+tree.children[4].value)
+		# hash_list
+                if tree.data=="nonsymmeta":
+			if self.name not in self.hashes:
+				self.hashes.append(self.name)
+			self.reads.append(tree.children[0].children[0].value+tree.children[1].value+tree.children[2].value)
+                if tree.data=="symmeta":
+                        if self.name not in self.hashes:
+                                self.hashes.append(self.name)
+			self.sym_reads.append(tree.children[0].children[0].value+tree.children[1].value+tree.children[2].value)
+                if tree.data=="nonsymhdr":
+                        if self.name not in self.hashes:
+                                self.hashes.append(self.name)
+			self.reads.append(tree.children[0].value+tree.children[1].value+tree.children[2].value+tree.children[3].value+tree.children[4].value)
+                if tree.data=="symhdr":
+                        if self.name not in self.hashes:
+                                self.hashes.append(self.name)
+			self.sym_reads.append(tree.children[0].value+tree.children[1].value+tree.children[2].value+tree.children[3].value+tree.children[4].value)
+		# lvalue
+                if tree.data=="nonsym_l":
+			self.writes.append(tree.children[0].value)
+                if tree.data=="sym_l":
+			self.sym_writes.append(tree.children[0].value)
+                if tree.data=="nonsymmeta_l":
+			self.writes.append(tree.children[0].children[0].value+tree.children[1].value+tree.children[2].value)
+                if tree.data=="symmeta_l":
+			self.sym_writes.append(tree.children[0].children[0].value+tree.children[1].value+tree.children[2].value)
+                if tree.data=="nonsymhdr_l":
+			self.writes.append(tree.children[0].value+tree.children[1].value+tree.children[2].value+tree.children[3].value+tree.children[4].value)
+                if tree.data=="symhdr_l":
+			self.sym_writes.append(tree.children[0].value+tree.children[1].value+tree.children[2].value+tree.children[3].value+tree.children[4].value)
+
+		# expression
+                #if tree.data=="hdr_valid":
+                if tree.data=="e_name":
+			self.reads.append(tree.children[0].value)	
+                if tree.data=="e_symname":
+			self.sym_reads.append(tree.children[0].value)
+                if tree.data=="e_meta":
+			self.reads.append(tree.children[0].children[0].value+tree.children[1].value+tree.children[2].value)
+                if tree.data=="e_symmeta":
+			self.sym_reads.append(tree.children[0].children[0].value+tree.children[1].value+tree.children[2].value)
+                if tree.data=="e_hdr":
+			self.reads.append(tree.children[0].value+tree.children[1].value+tree.children[2].value+tree.children[3].value+tree.children[4].value)
+                if tree.data=="e_symhdr":
+			self.sym_reads.append(tree.children[0].value+tree.children[1].value+tree.children[2].value+tree.children[3].value+tree.children[4].value)
+
+		# registers
+		if tree.data=="reg_act_exec":
+			self.regs.append(self.regact_to_name[tree.children[2].value])
+		if tree.data=="sym_reg_act_exec":
+			self.sym_regs.append(self.regact_to_name[tree.children[2].value])
+
+		'''
                 if tree.data=="lvalue":
                         if isinstance(tree.children[0],Token) and tree.children[0].type=="META":
                                 if tree.children[2].type=="META_NAME":
@@ -230,6 +295,7 @@ class Act_reads_writes(Visitor_Recursive):
                                 self.sym_writes.append(tree.children[2].value)
                         if tree.children[0].type=="HDR":
                                 self.writes.append(tree.children[2]+"."+tree.children[4])
+		'''
                 '''
                 if tree.data=="assignment":
                         # check lvalue (write)
@@ -727,9 +793,7 @@ class SymTran(Transformer):
                 if e.data=="e_symhdr":
                         return e.children[0]+e.children[1]+e.children[2]+e.children[3]+e.children[4].replace("[i]","_"+str(x))
         def sym_index_field_proc(self,i,x):
-                if i.data=="i_symname":
-                        return i.children[0].replace("[i]","_"+str(x))
-                elif i.data=="i_symmeta":
+                if i.data=="i_symmeta":
                         return i.children[0]+i.children[1]+i.children[2].replace("[i]","_"+str(x))
                 elif i.data=="i_symhdr":
                         return i.children[0]+i.children[1]+i.children[2]+i.children[3]+i.children[4].replace("[i]","_"+str(x))
@@ -845,8 +909,6 @@ class SymTran(Transformer):
                 else: # we don't have symbolic values
                         return a[0]+a[1]+a[2]+a[3]+"\n"
         # index_field
-        def i_name(self,a):
-                return a[0]
         def i_meta(self,a):
                 return a[0]+a[1]+a[2]
         def i_hdr(self,a):
