@@ -140,7 +140,9 @@ def get_meta_sizes(v1):
 	for m in v1.metas:
 		for f in m:
 			if f.data=="sym_structfield":   # we can also pull the symbolic value here, but we don't need it for now
-				sym_meta_sizes[f.children[2].value]=int(f.children[0].value.replace('bit<','').replace('>',''))
+				if isinstance(f.children[0].children[0], Tree): # symbolic width, hash
+					continue
+				sym_meta_sizes[f.children[2].value]=int(f.children[0].children[0].value.replace('bit<','').replace('>',''))
 				continue
 			if f.children[0].type=="TYPENAME":
 				meta_sizes[f.children[1].value]=int(v1.typenames[f.children[0].value].replace('bit<','').replace('>',''))
@@ -197,7 +199,7 @@ def get_reads_writes(v1,v2,conditionals):
                         	t_r.append(k)
                 	for ta in v1.tables_acts[a.replace("table_","")]:
                         	for ta_e in v1.action_defs[ta]:
-                                	v = Act_reads_writes(hashes,ta)
+                                	v = Act_reads_writes(hashes,ta, v1.regact_to_name)
                                 	v.visit(ta_e)
                                 	hashes = v.hashes
                                 	t_r += v.reads
@@ -218,7 +220,7 @@ def get_reads_writes(v1,v2,conditionals):
         	re = []
         	s_re = []
         	for e in v1.action_defs[a]:
-                	v = Act_reads_writes(hashes,a)
+                	v = Act_reads_writes(hashes,a, v1.regact_to_name)
                 	v.visit(e)
                 	hashes = v.hashes
                 	a_r+=v.reads
@@ -267,7 +269,7 @@ def get_reads_writes(v1,v2,conditionals):
 
 
 
-def non_sym_dep(v1,v2,conditional_act_groups,writes,reads,regs,regs_used_acts):
+def non_sym_dep(v1,v2,conditional_act_groups,writes,reads,regs,regs_used_acts, hashes, stateful):
 	# for now, we're not recording what fields are causing the dependency, but we can easily add this later
 	deps = {}
 	# this is deps for NON SYMBOLIC fields
@@ -299,7 +301,9 @@ def non_sym_dep(v1,v2,conditional_act_groups,writes,reads,regs,regs_used_acts):
                         	continue                        # don't care if they read from same fields bc can have concurrent reads
                 	# read after write
                 	if len(writes[a1_i].intersection(reads[a2_i])) > 0 and not ie:
-                        	if "table_" in a1 and "table_" in a2:
+				if a1 in hashes and a2 in stateful: # we can hash and access reg in same stage (TODO: hash can be in prev or same stg)
+					deps[(a1,a2)]=3
+                        	elif "table_" in a1 and "table_" in a2:
                                 	deps[(v1.tables_acts[a1.replace("table_","")][0],v1.tables_acts[a2.replace("table_","")][0])] = 1
                         	elif "table_" in a1:
                                 	deps[(v1.tables_acts[a1.replace("table_","")][0],a2)] = 1
@@ -310,7 +314,9 @@ def non_sym_dep(v1,v2,conditional_act_groups,writes,reads,regs,regs_used_acts):
                         	#continue
                 	# write after read
                 	if len(reads[a1_i].intersection(writes[a2_i])) > 0 and not ie:
-                        	if "table_" in a1 and "table_" in a2:
+				if a2 in hashes and a1 in stateful: # we can hash and access reg in same stage (TODO: hash can be in prev or same stg)
+					deps[(a1,a2)]=3
+                        	elif "table_" in a1 and "table_" in a2:
                                 	deps[(v1.tables_acts[a1.replace("table_","")][0],v1.tables_acts[a2.replace("table_","")][0])] = 1
                         	elif "table_" in a1:
                                 	deps[(v1.tables_acts[a1.replace("table_","")][0],a2)] = 1
@@ -346,7 +352,7 @@ def non_sym_dep(v1,v2,conditional_act_groups,writes,reads,regs,regs_used_acts):
 
 	return deps
 
-def sym_dep(v2, sym_writes, sym_reads, sym_regs, deps):
+def sym_dep(v2, sym_writes, sym_reads, sym_regs, deps, hashes, stateful):
 	# SYMBOLIC DEPS
 	# if two actions in the SAME iteration of a loop use same meta or reg (different iterations mean different vals in unrolled prog) 
 	for a1 in v2.sym_stmts:
@@ -356,10 +362,16 @@ def sym_dep(v2, sym_writes, sym_reads, sym_regs, deps):
                 	if a1_i >= a2_i:
                         	continue
                 	if len(sym_writes[a1_i].intersection(sym_reads[a2_i])) > 0 and (a1,a2) not in deps:
-                        	deps[(a1,a2)]=1
+				if (a1 in hashes and a2 in stateful):	# we can hash and access reg in same stage (TODO: hash can be in prev or same stg)
+					deps[(a1,a2)]=3
+				else:
+                        		deps[(a1,a2)]=1
                         	#continue
                 	if len(sym_reads[a1_i].intersection(sym_writes[a2_i])) > 0 and (a1,a2) not in deps:
-                        	deps[(a1,a2)]=1
+				if (a2 in hashes and a1 in stateful): # we can hash and access reg in same stage (TODO: hash can be in prev or same stg)
+					deps[(a1,a2)]=3
+                        	else:
+					deps[(a1,a2)]=1
                         	#continue
                 	if len(sym_writes[a1_i].intersection(sym_writes[a2_i])) > 0 and (a1,a2) not in deps:
                         	deps[(a1,a2)]=1
@@ -509,7 +521,23 @@ def ilp_dependency(v2, deps, name_to_num):
 
 	return ilp_deps
 
-def ilp_loop_groups(v2, name_to_num, ilp_loops):
+def get_act_name_loops(v2):
+	loop_act_name = {}
+	for sym_loop in v2.loop_stmts:
+		loop_act_name[sym_loop] = []
+		for l in v2.loop_stmts[sym_loop]:
+			for a in l:
+				if a.children[0].data=="conditional":
+					for act in a.children[0].children[5:-1]:
+						a_name = act.children[0].children[0].children[0].value
+						loop_act_name[sym_loop].append(a_name)
+					continue
+				a_name = a.children[0].children[0].children[0].value
+				loop_act_name[sym_loop].append(a_name)
+	return loop_act_name
+
+
+def ilp_loop_groups(name_to_num, ilp_loops, loop_act_name):
 	# keep track of actions that are in the same loop
 	loop_name = {}
 	# mapping symbolic value to action - this allows us to translate utility function that uses symbolic to util that uses ilp act vars
@@ -517,27 +545,30 @@ def ilp_loop_groups(v2, name_to_num, ilp_loops):
 	# this shouldn't matter in the ILP bc we require that all acts in a loop get placed the same number of times
 	#'''
 	ilp_sym_to_act_num = {}
-	for sym_loop in v2.loop_stmts:
+	for sym_loop in loop_act_name:
         	ilp_sym_to_act_num[sym_loop] = []
         	loop_name[sym_loop] = []
-        	for l in v2.loop_stmts[sym_loop]:
+        	for l in loop_act_name[sym_loop]:
                 	curr_loop = []
                 	for a in l:
-                        	if a.children[0].data=="conditional":
-                                	for act in a.children[0].children[5:-1]:
-                                        	a_name = act.children[0].children[0].children[0].value
-                                        	loop_name[sym_loop].append(a_name)
-                                        	for n in name_to_num[a_name]:
-                                                	curr_loop.append(n)
-                                                	#if len(ilp_sym_to_act_num[sym_loop]) <= len(name_to_num[a_name]):
-                                                	ilp_sym_to_act_num[sym_loop].append(n)
-                                	continue
-                        	a_name = a.children[0].children[0].children[0].value
-                        	loop_name[sym_loop].append(a_name)
-                        	for n in name_to_num[a_name]:
-                                	curr_loop.append(n)
-                                	#if len(ilp_sym_to_act_num[sym_loop]) <= len(name_to_num[a_name]):
-                                	ilp_sym_to_act_num[sym_loop].append(n)
+				for n in name_to_num[a]:
+					curr_loop.append(n)
+					ilp_sym_to_act_num[sym_loop].append(n)
+                        	#if a.children[0].data=="conditional":
+                                #	for act in a.children[0].children[5:-1]:
+                                #        	a_name = act.children[0].children[0].children[0].value
+                                #        	loop_name[sym_loop].append(a_name)
+                                #        	for n in name_to_num[a_name]:
+                                #                	curr_loop.append(n)
+                                #                	#if len(ilp_sym_to_act_num[sym_loop]) <= len(name_to_num[a_name]):
+                                #                	ilp_sym_to_act_num[sym_loop].append(n)
+                                #	continue
+                        	#a_name = a.children[0].children[0].children[0].value
+                        	loop_name[sym_loop].append(a)
+                        	#for n in name_to_num[a_name]:
+                                #	curr_loop.append(n)
+                                #	#if len(ilp_sym_to_act_num[sym_loop]) <= len(name_to_num[a_name]):
+                                #	ilp_sym_to_act_num[sym_loop].append(n)
                 	ilp_loops.append(curr_loop)
 	#'''
 	# groups for ILP - actions that must be placed together
@@ -813,9 +844,12 @@ def ilp_parse(parse_tree):
 	#print v2.stmts
 	#print v2.conditionals["write_kvs"]
 	#print v2.loop_stmts
+	#exit()
 	#print v2.t
 	#print v2.conditional_acts
 	#print v2.t
+
+	loop_act_name = get_act_name_loops(v2)
 
 	conditionals, conditional_act_groups = get_conds(v2)
 
@@ -832,15 +866,24 @@ def ilp_parse(parse_tree):
 
 	meta_sizes, sym_meta_sizes, total_req_meta = get_meta_sizes(v1)
 
-	reads, writes, sym_reads, sym_writes, regs, sym_regs, stateful, hashes, meta_used_acts, regs_use
-d_acts, sym_meta_used_acts, sym_regs_used_acts, acts_writes, tables_acts_cond = get_reads_writes(v1,v2,conditionals)
+	reads, writes, sym_reads, sym_writes, regs, sym_regs, stateful, hashes, meta_used_acts, regs_used_acts, sym_meta_used_acts, sym_regs_used_acts, acts_writes, tables_acts_cond = get_reads_writes(v1,v2,conditionals)
 
-	deps = non_sym_dep(v1,v2,conditional_act_groups,writes,reads,regs,regs_used_acts)
+	deps = non_sym_dep(v1,v2,conditional_act_groups,writes,reads,regs,regs_used_acts, hashes, stateful)
 
-	sym_dep(v2, sym_writes, sym_reads, sym_regs, deps)
+	sym_dep(v2, sym_writes, sym_reads, sym_regs, deps, hashes, stateful)
 
 	tcam_acts, ilp_tcam_size = tcam_dep(v1, v2, deps, acts_writes)
 
+	print reads
+	print sym_reads
+	print writes
+	print sym_writes
+	print regs
+	print sym_regs
+	print hashes
+	print deps
+	print loop_act_name
+	exit()
 	# ilp actions get info for ilp, in format readable by ilp
 	act_num, name_to_num, num_to_name, stateless_upper_bound, stateful_upper_bound, ilp_loops, mem_per_stg = set_nums_upper_bounds(v1, v2, stateful)
 
@@ -853,7 +896,7 @@ d_acts, sym_meta_used_acts, sym_regs_used_acts, acts_writes, tables_acts_cond = 
 
 	ilp_deps = ilp_dependency(v2, deps, name_to_num)
 
-	ilp_sym_to_act_num, ilp_groups = ilp_loop_groups(v2, name_to_num, ilp_loops)
+	ilp_sym_to_act_num, ilp_groups = ilp_loop_groups(name_to_num, ilp_loops)
 
 	ilp_meta, ilp_meta_sizes, meta_num = ilp_metas(sym_meta_used_acts, name_to_num)
 
