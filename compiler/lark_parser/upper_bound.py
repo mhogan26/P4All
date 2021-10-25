@@ -11,10 +11,7 @@ import time
 
 
 
-num_stages = 12
-stateless = 100
-
-def get_upper_bound(loop, stateful, stateless_ub, state_ub, deps):
+def get_upper_bound(loop, stateful, stateless_ub, state_ub, num_stages, deps):
 # input here is list of actions in the loop
 	# create graph nodes for each action in a for loop
 	acts_to_add = []
@@ -97,7 +94,7 @@ def get_upper_bound(loop, stateful, stateless_ub, state_ub, deps):
 	iterations = 0
 
 	# case where graph has no edges:
-	#       upper bound is stateless * num stages
+	#       upper bound is stateless_ub = stateless * num stages
 	if len(g.edges()) <= 0:
 		iterations = ub
 		return iterations
