@@ -2,7 +2,7 @@ from lark import Lark, Visitor, Token, Tree, Transformer, v_args
 from lark.visitors import Visitor_Recursive
 
 from visit import *
-
+from upper_bound import *
 
 
 #TODO: make this work if for loop w/in conditional
@@ -208,6 +208,8 @@ def get_reads_writes(v1,v2,conditionals):
                                         	t_re += v.regs
                                         	if ta not in stateful and len(v.regs) > 0:
                                                 	stateful.append(ta)
+				if len(t_re)>0:
+					regs_used_acts[ta]=t_re
                         	acts_writes[ta] = list(set(t_w))
                 	writes.append(set(t_w))
                 	reads.append(set(t_r))
@@ -419,7 +421,7 @@ def tcam_dep(v1, v2, deps, acts_writes):
 	return tcam_acts, ilp_tcam_size
 
 
-def set_nums_upper_bounds(v1, v2, stateful):
+def set_nums_w_upper_bounds(v1, v2, ubs):
 	# maybe we do this in ILP? so we don't have to read from resource file multiple times?
 	# we need to create mapping from action name to number (numbers used in ILP)
 	# number corresponds to order they appear in control
@@ -429,14 +431,13 @@ def set_nums_upper_bounds(v1, v2, stateful):
 	act_num = 0
 	name_to_num = {}
 	num_to_name = {}
-	stateless_upper_bound = 14 # this is stateless ALUs * num stgs
-	stateful_upper_bound = 14       # this is stateful ALUs * num stgs
 	ilp_loops = []
 	# give SYMBOLIC VAL an upper bound, not an action
 	for a in v2.stmts:
         	if "table_" in a:
                 	for at in v1.tables_acts[a.replace("table_","")]:
                         	name_to_num[at]=[act_num]
+				num_to_name[act_num] = at
                        		act_num += 1
                 	continue
         	# we have a symolic in a loop
@@ -444,10 +445,7 @@ def set_nums_upper_bounds(v1, v2, stateful):
                 	if "table_" in a:
                         	continue
                 	name_to_num[a]=[]
-                	ub = stateless_upper_bound
-                	if a in stateful:       # make the upper bound a little smaller if we can
-                        	ub = stateful_upper_bound
-                	for i in range(ub):
+                	for i in range(ubs[a]):
                         	name_to_num[a].append(act_num)
                         	num_to_name[act_num]=a
                         	act_num += 1
@@ -460,10 +458,8 @@ def set_nums_upper_bounds(v1, v2, stateful):
                 	act_num += 1
 
 	# after we finish the loop, act_num = TOTAL NUM OF ACTIONS we have in the prog
-	# utility function on ilp memory variables, upper bound is max memory in stg
-	mem_per_stg = 2097152
 
-	return act_num, name_to_num, num_to_name, stateless_upper_bound, stateful_upper_bound, ilp_loops, mem_per_stg 
+	return act_num, name_to_num, num_to_name, ilp_loops 
 
 def ilp_tcam(tcam_acts, name_to_num):
 	# tcam acts - TODO: ALLOW FOR SYMBOLIC NUM OF TABLES?
@@ -539,21 +535,25 @@ def get_act_name_loops(v2):
 
 def ilp_loop_groups(name_to_num, ilp_loops, loop_act_name):
 	# keep track of actions that are in the same loop
-	loop_name = {}
 	# mapping symbolic value to action - this allows us to translate utility function that uses symbolic to util that uses ilp act vars
 	# we only count the first action in a loop for the utility function
 	# this shouldn't matter in the ILP bc we require that all acts in a loop get placed the same number of times
-	#'''
+	ilp_sym_to_act_num = {}
+	for sym, sym_acts_l in loop_act_name.items():
+		ilp_sym_to_act_num[sym] = []
+		for sym_act in sym_acts_l:
+			ilp_loops.append(name_to_num[sym_act])
+			ilp_sym_to_act_num[sym] += name_to_num[sym_act]
+	'''
 	ilp_sym_to_act_num = {}
 	for sym_loop in loop_act_name:
         	ilp_sym_to_act_num[sym_loop] = []
-        	loop_name[sym_loop] = []
         	for l in loop_act_name[sym_loop]:
                 	curr_loop = []
-                	for a in l:
-				for n in name_to_num[a]:
-					curr_loop.append(n)
-					ilp_sym_to_act_num[sym_loop].append(n)
+			print l
+			for n in name_to_num[l]:
+				curr_loop.append(n)
+				ilp_sym_to_act_num[sym_loop].append(n)
                         	#if a.children[0].data=="conditional":
                                 #	for act in a.children[0].children[5:-1]:
                                 #        	a_name = act.children[0].children[0].children[0].value
@@ -564,27 +564,26 @@ def ilp_loop_groups(name_to_num, ilp_loops, loop_act_name):
                                 #                	ilp_sym_to_act_num[sym_loop].append(n)
                                 #	continue
                         	#a_name = a.children[0].children[0].children[0].value
-                        	loop_name[sym_loop].append(a)
-                        	#for n in name_to_num[a_name]:
-                                #	curr_loop.append(n)
-                                #	#if len(ilp_sym_to_act_num[sym_loop]) <= len(name_to_num[a_name]):
-                                #	ilp_sym_to_act_num[sym_loop].append(n)
+                        #for n in name_to_num[a_name]:
+                        #	curr_loop.append(n)
+                        #	#if len(ilp_sym_to_act_num[sym_loop]) <= len(name_to_num[a_name]):
+                        #	ilp_sym_to_act_num[sym_loop].append(n)
                 	ilp_loops.append(curr_loop)
-	#'''
+	'''
 	# groups for ILP - actions that must be placed together
 	# these are the actions in the same iterations of loops indexed by same symbolic var
 	ilp_groups = []
-	for sym in loop_name:
-	        for a_i in range(len(name_to_num[loop_name[sym][0]])):  # this assumes ALL ACTS IN LOOP HAVE SAME UPPER BOUND! (not enforced yet!)
+	for sym in loop_act_name:
+	        for a_i in range(len(name_to_num[loop_act_name[sym][0]])):  # this assumes ALL ACTS IN LOOP HAVE SAME UPPER BOUND! (not enforced yet!)
                 	curr_it = []
-                	for a in loop_name[sym]:
+                	for a in loop_act_name[sym]:
                         	curr_it.append(name_to_num[a][a_i])
                 	ilp_groups.append(curr_it)
 
 
 	return ilp_sym_to_act_num, ilp_groups
 
-def ilp_metas(sym_meta_used_acts, name_to_num):
+def ilp_metas(sym_meta_used_acts, name_to_num, sym_meta_sizes):
 	# any meta that isn't symbolic is automatically placed - if we can't place that, then we automatically fail (don't even go to ILP)
 	# we need to give ILP the amount of metadata AFTER we subtract the required meta (and headers)
 	# ^ this is total_req_meta
@@ -604,11 +603,11 @@ def ilp_metas(sym_meta_used_acts, name_to_num):
                 	curr_meta = []
                 	curr_meta_sizes = []
                 	for m in sym_meta_used_acts[a]:
-                        	if "." in m:    # this is a header field, we're only looking at metadata
-                                	continue
-                        	curr_meta.append(m.replace('[i]',''))
-                        	curr_meta_sizes.append(sym_meta_sizes[m.replace('[i]','')])
-                        	break
+                        	#if "." in m:    # this is a header field, we're only looking at metadata
+                                #	continue
+                        	curr_meta.append(m.split('.')[-1].replace('[i]',''))
+                        	curr_meta_sizes.append(sym_meta_sizes[m.split('.')[-1].replace('[i]','')])
+                        	#break
                 	meta_num[a_n]=curr_meta
                 	if len(curr_meta)>0:
                         	ilp_meta.append(a_n)
@@ -632,14 +631,14 @@ def ilp_regs(v1, ilp_stateful, num_to_name, sym_regs_used_acts, regs_used_acts):
         	# would do a loop here if more than one reg in action, but for now we allow only 1
         	# sym_regs_used_acts is ONLY stateful actions w/in for loop (symbolic array of regs)
         	if a in sym_regs_used_acts:
-                	ilp_reg_width.append(int(v1.sym_reg_array_widths[sym_regs_used_acts[a][0]].replace('bit<','').replace('>','')))
+                	ilp_reg_width.append(int(v1.sym_reg_array_widths[sym_regs_used_acts[a][0].replace("[i]","")].replace('bit<','').replace('>','')))
                 	ilp_reg_inst.append(-1)
-                	if v1.sym_reg_array_inst[sym_regs_used_acts[a][0]] not in sym_to_reg_width:
-                        	sym_to_reg_width[v1.sym_reg_array_inst[sym_regs_used_acts[a][0]]] = ilp_reg_width[-1]
-                	if v1.sym_reg_array_inst[sym_regs_used_acts[a][0]] in ilp_sym_to_reg_act_num:
-                        	ilp_sym_to_reg_act_num[v1.sym_reg_array_inst[sym_regs_used_acts[a][0]]].append(a_n)
+                	if v1.sym_reg_array_inst[sym_regs_used_acts[a][0].replace("[i]","")] not in sym_to_reg_width:
+                        	sym_to_reg_width[v1.sym_reg_array_inst[sym_regs_used_acts[a][0].replace("[i]","")]] = ilp_reg_width[-1]
+                	if v1.sym_reg_array_inst[sym_regs_used_acts[a][0].replace("[i]","")] in ilp_sym_to_reg_act_num:
+                        	ilp_sym_to_reg_act_num[v1.sym_reg_array_inst[sym_regs_used_acts[a][0].replace("[i]","")]].append(a_n)
                 	else:
-                        	ilp_sym_to_reg_act_num[v1.sym_reg_array_inst[sym_regs_used_acts[a][0]]] = [a_n]
+                        	ilp_sym_to_reg_act_num[v1.sym_reg_array_inst[sym_regs_used_acts[a][0].replace("[i]","")]] = [a_n]
                 	#continue
         	if a in regs_used_acts: # this could be non-symbolic regs or regs with symbolic size but NOT symbolic array of regs
                 	if regs_used_acts[a][0] in v1.reg_inst:
@@ -658,7 +657,7 @@ def ilp_regs(v1, ilp_stateful, num_to_name, sym_regs_used_acts, regs_used_acts):
 	return ilp_reg_inst, ilp_reg_width, ilp_sym_to_reg_act_num, sym_to_reg_width
 
 
-def ilp_same_reg_inst(sym_regs_used_acts):
+def ilp_same_reg_inst(sym_regs_used_acts, name_to_num):
 	# stateful acts that share the same symbolic reg array
 	# the size (# instances) of each reg array must be the same (bc indexed on same sym value)
 	# assume sym reg arrays ALWAYS have sym instances - THIS IS NOT ALWAYS TRUE!!! (TODO: update this)
@@ -672,10 +671,9 @@ def ilp_same_reg_inst(sym_regs_used_acts):
 
 def get_assumes(v1):
 	astmt = []
-
 	for a in v1.assumes:
         	atran = AssumeTran()
-        	astmt.append(atran.transform(v1.assumes[0]))
+        	astmt.append(atran.transform(a))
 
 	return astmt
 
@@ -723,9 +721,9 @@ def pwl_util(v1, ilp_sym_to_reg_act_num, ilp_sym_to_act_num, stateful, sym_to_re
         	if ilp_sym_to_act_num[0] in stateful:
                 	stateful_v=1
 
-
 	# set lower and upper bounds for PWL functions (based on resources and/or assume stmts)
 	# lower bound (lb) is inclusive, upper bound (ub) is exclusive
+	# utility function on ilp memory variables, upper bound is max memory in stg
 	ub = 0
 	lb = 0
 	if mem_var:
@@ -787,8 +785,6 @@ def write_pwl_to_ilp_file(ilp_stateful, ilp_meta, ilp_meta_sizes, ilp_groups, il
         	f.write("\n")
         	f.writelines("%s " % rw for rw in ilp_reg_width)        # width of each reg array (corresponding to stateful act nums)
         	f.write("\n")
-        	#f.write("1")                                            # utililty provided? TODO: get rid of this
-        	#f.write("\n")  
         	f.writelines("%s " % h for h in ilp_hashes)             # nums of acts that hash
         	f.write("\n")
         	f.write(str(act_num))                                   # total number of acts we have
@@ -810,8 +806,22 @@ def write_pwl_to_ilp_file(ilp_stateful, ilp_meta, ilp_meta_sizes, ilp_groups, il
         	f.write("\n")
         	f.writelines("%s " % yv for yv in y_vals)               # y values for PWL util (util values)
 
+def upper_bound_calc(loop_act_name,stateful, deps):
+	# open resources.txt to get stateful/stateless upper bounds
+	ubs = {}
+	switch_info = []
+	with open("../resources.txt", "r") as f:
+		switch_info = f.readlines()
+	switch_info = [int(x.strip()) for x in switch_info]
+	stg = switch_info[1]
+	num_state = switch_info[2]
+	num_stateless = switch_info[6]
+	for sym_loop, loop_acts in loop_act_name.items():
+		ub = get_upper_bound(loop_acts, stateful, num_stateless*stg, num_state*stg, stg, deps)
+		for a in loop_acts:
+			ubs[a] = ub
 
-
+	return ubs, num_stateless*stg, num_state*stg, switch_info[0]
 
 def ilp_parse(parse_tree):
 	v1 = V_r1()
@@ -874,18 +884,19 @@ def ilp_parse(parse_tree):
 
 	tcam_acts, ilp_tcam_size = tcam_dep(v1, v2, deps, acts_writes)
 
-	print reads
-	print sym_reads
-	print writes
-	print sym_writes
-	print regs
-	print sym_regs
-	print hashes
-	print deps
-	print loop_act_name
-	exit()
+	ubs, stateless_upper_bound, stateful_upper_bound, mem_per_stg = upper_bound_calc(loop_act_name, stateful, deps)
+	
+	#print reads
+	#print sym_reads
+	#print writes
+	#print sym_writes
+	#print regs
+	#print sym_regs
+	#print hashes
+	#print deps
+	#print loop_act_name
 	# ilp actions get info for ilp, in format readable by ilp
-	act_num, name_to_num, num_to_name, stateless_upper_bound, stateful_upper_bound, ilp_loops, mem_per_stg = set_nums_upper_bounds(v1, v2, stateful)
+	act_num, name_to_num, num_to_name, ilp_loops = set_nums_w_upper_bounds(v1, v2, ubs)
 
 	ilp_tcam_acts = ilp_tcam(tcam_acts, name_to_num)
 
@@ -896,13 +907,13 @@ def ilp_parse(parse_tree):
 
 	ilp_deps = ilp_dependency(v2, deps, name_to_num)
 
-	ilp_sym_to_act_num, ilp_groups = ilp_loop_groups(name_to_num, ilp_loops)
+	ilp_sym_to_act_num, ilp_groups = ilp_loop_groups(name_to_num, ilp_loops, loop_act_name)
 
-	ilp_meta, ilp_meta_sizes, meta_num = ilp_metas(sym_meta_used_acts, name_to_num)
+	ilp_meta, ilp_meta_sizes, meta_num = ilp_metas(sym_meta_used_acts, name_to_num, sym_meta_sizes)
 
 	ilp_reg_inst, ilp_reg_width, ilp_sym_to_reg_act_num, sym_to_reg_width = ilp_regs(v1, ilp_stateful, num_to_name, sym_regs_used_acts, regs_used_acts)
 
-	ilp_same_size = ilp_same_reg_inst(sym_regs_used_acts)
+	ilp_same_size = ilp_same_reg_inst(sym_regs_used_acts, name_to_num)
 
 	# mapping symbolic value to meta
 	# DO WE NEED THIS? this should ALWAYS correspond to the symbolic used in a for loop. so we should just be able to use ILP's act vars
@@ -925,8 +936,6 @@ def ilp_parse(parse_tree):
 	astmt = get_assumes(v1)
 
 	mem_var, act_var, uvar, x_vals, y_vals = pwl_util(v1, ilp_sym_to_reg_act_num, ilp_sym_to_act_num, stateful, sym_to_reg_width, stateful_upper_bound, stateless_upper_bound, mem_per_stg, astmt)
-
-
 	# we need to translate assume statements to ILP constraints
 	# m.addConstr(quicksum()>=0)
 
