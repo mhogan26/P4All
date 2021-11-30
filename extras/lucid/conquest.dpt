@@ -1,0 +1,168 @@
+// lucid implementation of conquest (byte interval version)
+// we have a series of snapshots (cms), each of which represents a measurement interval of T bytes
+// we measure queuing delay by the size of the q (in bytes) when a packet enters
+
+// T, cols are constants that we know at compile time
+// h = 4
+const int cols = 128;
+const int T = 256;
+
+
+/* Arrays */
+global Array.t<<32>> bytes = Array.create(1);
+// this depends on the # of snaps we have --> log2(h)
+global Array.t<<2>> writesnap = Array.create(1);
+global Array.t<<7>> pkts = Array.create(1);
+// snapshots
+global Array.t<<32>> snap_0_row_0 = Array.create(cols);
+global Array.t<<32>> snap_0_row_1 = Array.create(cols);
+global Array.t<<32>> snap_1_row_0 = Array.create(cols);
+global Array.t<<32>> snap_1_row_1 = Array.create(cols);
+global Array.t<<32>> snap_2_row_0 = Array.create(cols);
+global Array.t<<32>> snap_2_row_1 = Array.create(cols);
+global Array.t<<32>> snap_3_row_0 = Array.create(cols);
+global Array.t<<32>> snap_3_row_1 = Array.create(cols);
+
+/* Events */
+// pkt in
+entry event ip_in (int<<9>> igr_port, int src, int dst, int qdelay, int bytesize);
+// send back to switch
+exit event ip_out (int<<9>> egr_port, int src, int dst);
+
+
+/* Memops */
+memop incrpkt(int<<7>> memval, int<<7>> incrval) {
+	return memval + incrval;
+}
+memop incr(int memval, int incrval) {
+        return memval + incrval;
+}
+
+memop setf1 (int<<2>> memval, int<<2>> newval) {
+	return newval;
+}
+memop setfpkt (int<<7>> memval, int<<7>> newval) {
+        return newval;
+}
+
+// reg will be updated with new snap?
+// but we need new snap to know where to write, which is fine, bc that's in metadata????
+// we ALWAYS write to newval, right?? the only reason we need to know if memval != newval is for cleaning
+memop getold (int<<2>> memval, int<<2>> newval) {
+	return memval;
+}
+
+// how can we mark if we're writing to new snap????? (to know if we should reset pkt counter)
+// we write old value to metadata, and always store new calculation
+// if old != new, then we start cleaning new snap
+
+
+/* Handlers */
+// type of variables? not all have to be 32-bit ints
+handle ip_in (int<<9>> igr_port, int src, int dst, int qdelay, int bytesize) {
+	// increment byte counter
+	int bytecount = Array.update(bytes, 0, incr, bytesize, incr, bytesize);
+
+	// find snap we should be writing to --> (byte counter / T) mod h --> (bytecount >> log2(T)) & (h - 1)
+	int<<2>> newwrite = (int<<2>>)(bytecount >>> 8) & 3;
+
+	// update stored value for writing snapshot
+	// does read come before write?
+	int<<2>> currwrite = Array.update(writesnap, 0, getold, newwrite, setf1, newwrite);
+	int<<7>> pktcount = 0;
+	if (newwrite != currwrite) {	// writing to a new snapshot
+		// set pkt counter = 0, we start cleaning new snapshot
+		int<<7>> pktcount = Array.update(pkts, 0, setfpkt, 0, setfpkt, 0);
+	}
+	else {	// not writing to a new shapshot, so clean next reg in array
+		// increment pkt counter (for cleaning)
+		int<<7>> pktcount = Array.update(pkts, 0, incrpkt, 1, incrpkt, 1);
+	}
+
+	// pktcount can only store cols values --> what happens if we try to keep incrementing? what does tofino do? (go back to 0?)
+
+	// for reading:
+        //      # snaps to read = qdelay / T 
+	int<<8>> num_to_read = (int<<8>>)qdelay >>> 8;
+
+
+	// hashing
+	int<<7>> snap_0_row_0_hash = hash<<7>>(22,src,dst);
+	int<<7>> snap_0_row_1_hash = hash<<7>>(33,src,dst);
+	int<<7>> snap_1_row_0_hash = hash<<7>>(44,src,dst);
+	int<<7>> snap_1_row_1_hash = hash<<7>>(55,src,dst);
+	int<<7>> snap_2_row_0_hash = hash<<7>>(66,src,dst);
+	int<<7>> snap_2_row_1_hash = hash<<7>>(77,src,dst);
+	int<<7>> snap_3_row_0_hash = hash<<7>>(88,src,dst);
+	int<<7>> snap_3_row_1_hash = hash<<7>>(99,src,dst);
+
+	// init vals
+	int s_0_r_0 = 0;
+	int s_0_r_1 = 0;
+	int s_1_r_0 = 0;
+	int s_1_r_1 = 0;
+	int s_2_r_0 = 0;
+	int s_2_r_1 = 0;
+	int s_3_r_0 = 0;
+	int s_3_r_1 = 0;
+
+	// write, clean, read
+	// need separate match action table for each snap, row
+	// clean snap reg @ pktcount
+	// we can't guarantee that measurement interval = pkts neeeded to clean sketch, bc measurement interval in bytes (not pkts)
+	// we assume user has picked appropriate intervals that are large enough to clean sketch
+	// it's ok if we get more pkts than we need to clean but NOT OK if pkts < cols 
+	// NOTE: num_to_read matches should be 0, 0, 1, 2 but we can't do that in lucid syntax (can do with tofino)
+	match (newwrite, num_to_read) with
+	| 0, 0 -> {s_0_r_0 = Array.update(snap_0_row_0, snap_0_row_0_hash, incr, 1, incr, 1);}
+	| 1, 0 -> {Array.set(snap_0_row_0, pktcount, 0);}
+	| 2, 1 -> {s_0_r_0 = Array.get(snap_0_row_0, snap_0_row_0_hash);}
+	| 3, 2 -> {s_0_r_0 = Array.get(snap_0_row_0, snap_0_row_0_hash);}
+
+        match (newwrite, num_to_read) with
+        | 0, 0 -> {s_0_r_1 = Array.update(snap_0_row_1, snap_0_row_1_hash, incr, 1, incr, 1);}
+        | 1, 0 -> {Array.set(snap_0_row_1, pktcount, 0);}
+        | 2, 1 -> {s_0_r_1 = Array.get(snap_0_row_1, snap_0_row_1_hash);}
+        | 3, 2 -> {s_0_r_1 = Array.get(snap_0_row_1, snap_0_row_1_hash);}
+
+        match (newwrite, num_to_read) with
+        | 1, 0 -> {s_1_r_0 = Array.update(snap_1_row_0, snap_1_row_0_hash, incr, 1, incr, 1);}
+        | 2, 0 -> {Array.set(snap_1_row_0, pktcount, 0);}
+        | 3, 1 -> {s_1_r_0 = Array.get(snap_1_row_0, snap_1_row_0_hash);}
+        | 0, 2 -> {s_1_r_0 = Array.get(snap_1_row_0, snap_1_row_0_hash);}
+
+        match (newwrite, num_to_read) with
+        | 1, 0 -> {s_1_r_1 = Array.update(snap_1_row_1, snap_1_row_1_hash, incr, 1, incr, 1);}
+        | 2, 0 -> {Array.set(snap_1_row_1, pktcount, 0);}
+        | 3, 1 -> {s_1_r_1 = Array.get(snap_1_row_1, snap_1_row_1_hash);}
+        | 0, 2 -> {s_1_r_1 = Array.get(snap_1_row_1, snap_1_row_1_hash);}
+
+        match (newwrite, num_to_read) with
+        | 2, 0 -> {s_2_r_0 = Array.update(snap_2_row_0, snap_2_row_0_hash, incr, 1, incr, 1);}
+        | 3, 0 -> {Array.set(snap_2_row_0, pktcount, 0);}
+        | 0, 1 -> {s_2_r_0 = Array.get(snap_2_row_0, snap_2_row_0_hash);}
+        | 1, 2 -> {s_2_r_0 = Array.get(snap_2_row_0, snap_2_row_0_hash);}
+
+        match (newwrite, num_to_read) with
+        | 2, 0 -> {s_2_r_1 = Array.update(snap_2_row_1, snap_2_row_1_hash, incr, 1, incr, 1);}
+        | 3, 0 -> {Array.set(snap_2_row_1, pktcount, 0);}
+        | 0, 1 -> {s_2_r_1 = Array.get(snap_2_row_1, snap_2_row_1_hash);}
+        | 1, 2 -> {s_2_r_1 = Array.get(snap_2_row_1, snap_2_row_1_hash);}
+
+        match (newwrite, num_to_read) with
+        | 3, 0 -> {s_3_r_0 = Array.update(snap_3_row_0, snap_3_row_0_hash, incr, 1, incr, 1);}
+        | 0, 0 -> {Array.set(snap_3_row_0, pktcount, 0);}
+        | 1, 1 -> {s_3_r_0 = Array.get(snap_3_row_0, snap_3_row_0_hash);}
+        | 2, 2 -> {s_3_r_0 = Array.get(snap_3_row_0, snap_3_row_0_hash);}
+
+        match (newwrite, num_to_read) with
+        | 3, 0 -> {s_3_r_1 = Array.update(snap_3_row_1, snap_3_row_1_hash, incr, 1, incr, 1);}
+        | 0, 0 -> {Array.set(snap_3_row_1, pktcount, 0);}
+        | 1, 1 -> {s_3_r_1 = Array.get(snap_3_row_1, snap_3_row_1_hash);}
+        | 2, 2 -> {s_3_r_1 = Array.get(snap_3_row_1, snap_3_row_1_hash);}
+
+
+	// find the min across rows --> min function?
+	// sum reads together (using mult layers)
+
+}
