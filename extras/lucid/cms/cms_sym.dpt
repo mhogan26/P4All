@@ -3,11 +3,11 @@
 // symbolics
 symbolic int cols;
 symbolic int rows; 
+symbolic size logcols;
 
 // len of this bounds number of rows we can have in the sketch
 // e.g., this limits us to at most 8 rows
-// are we allowed to do this in lucid? just using java syntax for now
-int[] hash_seeds = {22,33,44,55,66,77,88,99};
+const int[8] hash_seeds = [22;33;44;55;66;77;88;99];
 
 // threshold for hh
 const int thresh = 100;
@@ -44,15 +44,15 @@ memop incr(int memval, int incrval) {
 /* Handlers */
 handle ip_in (int<<9>> igr_port, int src, int dst, int flowid, int<<1>> hh) {
 	/* actual cms */
-	// init values - is this right? should this go here? can we write this in p4 harness code?
+	// init values
 	int min = 0xffffffff;
 	hh = 0;
 
 	for (i < rows) {
 		// get index
 		// log2 --> we don't know how many spaces we're hashing to, so we don't know how many bits to use for index
-		// using log2 as a placeholder for now
-		int<<log2(cols)>> idx = hash<<log2(cols)>>(hash_seeds[i],src,dst);
+		// logcols = log2(cols) (we manually do this calc when we gen concretes)
+		int<<logcols>> idx = hash<<logcols>>(hash_seeds[i],src,dst);
 		// incr value
 		int val = Array.update(cms[i], idx, incr, 1, incr, 1);
 		// calculate min as we go
