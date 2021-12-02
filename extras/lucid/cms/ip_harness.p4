@@ -153,7 +153,7 @@ control Ingress(
 	@DPT_OBJECTS
 
 	action drop() {
-		ig_intr_dprsr_md.drop_ctl = 0x1; // Drop packet.
+		ig_dprsr_md.drop_ctl = 0x1; // Drop packet.
 	}
 
 	action nop(){
@@ -244,6 +244,6 @@ control EmptyEgress(
 
 
 
-Pipeline(SwitchIngressParser(),SwitchIngress(),SwitchIngressDeparser(),EmptyEgressParser(),EmptyEgress(),EmptyEgressDeparser())pipe;
+Pipeline(IngressParser(),Ingress(),IngressDeparser(),EmptyEgressParser(),EmptyEgress(),EmptyEgressDeparser())pipe;
 Switch(pipe)main;
 
