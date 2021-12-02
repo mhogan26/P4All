@@ -53,7 +53,7 @@ handle ip_in (int<<9>> igr_port, int src, int dst, int flowid, int<<1>> hh) {
 		// get index
 		// log2 --> we don't know how many spaces we're hashing to, so we don't know how many bits to use for index
 		// using log2 as a placeholder for now
-		int<<logcols>> idx = hash<<logcols>>(size_to_int(i)+10,src,dst);
+		int<<logcols>> idx = hash<<logcols>>(size_to_int(i),src,dst);
 		// incr value
 		int val = Array.update(cms[i], idx, incr, 1, incr, 1);
 		// calculate min as we go
