@@ -117,12 +117,12 @@ while True:
 # we test the top x solutions to see if they compile --> if they do, we're done!
 # else, we can repeat above loop, excluding solutions we now know don't compile
 # (we have to have a harness p4 file for this step, but not for interpreter)
-# compile command doesn't work rn, can't find .symb file?????
+# for now, we have a second lucid program that doesn't have interpreter sim measurements, this is the version we want to compile to tofino
 # NOTE: use vagrant vm to compile
 for sol in top_sols:
     write_symb(sol[0],sol[1])
     # compile lucid to p4
-    cmd_lp4 = ["../../dptc cms_sym.dpt ip_harness.p4 linker_config.json cms_sym_build"]
+    cmd_lp4 = ["../../dptc cms_sym_nomeasure.dpt ip_harness.p4 linker_config.json cms_sym_build --symb cms_sym.symb"]
     ret_lp4 = subprocess.run(cmd_lp4, shell=True)
     # we shouldn't have an issue compiling to p4, but check anyways
     if ret_lp4.returncode != 0:
