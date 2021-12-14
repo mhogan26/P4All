@@ -41,6 +41,13 @@ memop incr(int memval, int incrval) {
 	return memval + incrval;
 }
 
+memop compute_min(int memval, int minval) {
+	if (memval + 1 < minval) {
+		return memval;
+	} else {
+		return minval;
+	}
+}
 
 /* Handlers */
 handle ip_in (int<<9>> igr_port, int src, int dst, int flowid, int<<1>> hh) {
@@ -54,14 +61,13 @@ handle ip_in (int<<9>> igr_port, int src, int dst, int flowid, int<<1>> hh) {
 		// log2 --> we don't know how many spaces we're hashing to, so we don't know how many bits to use for index
 		// using log2 as a placeholder for now
 		int<<logcols>> idx = hash<<logcols>>(size_to_int(i),src,dst);
-		// incr value
-		int val = Array.update(cms[i], idx, incr, 1, incr, 1);
-		// calculate min as we go
-		if (val < min) {
-			min = val;
-		}
+		// incr value and calc min as we go
+		// NOTE: use memop for min calc bc it only needs 1 stage (uses stateful alu)
+		// if we use a conditional to compare, it breaks up the comparison and takes mult stages
+		min = Array.update(cms[i], idx, incr, 1, compute_min, min);
 	}
 
+	/* 
 	if (min > thresh) {
 		// report to controller or mark packet as heavy hitter or something
 		// what we do here will likely be application dependent, but for this example we're marking the packet
@@ -69,6 +75,7 @@ handle ip_in (int<<9>> igr_port, int src, int dst, int flowid, int<<1>> hh) {
 		// in reality, we might want to probabilistically report, or limit the number of times we report a flow (e.g., bloom filter to keep track of if we've already reported)
 		hh = 1;
 	}
+	*/
 
 	/* measurement stuff */
 	// just write to array for now, and maybe we pull these vals after running simulation to get avg error
