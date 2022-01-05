@@ -1,0 +1,187 @@
+/* precision in lucid */
+// basic algo:
+// d hash functions (tables)
+// for each hash table, compute index
+// if key at index matches current packet, increment stored value
+// else, if the stored value is less than the current min, updated min (and stage number)
+// if key does not match any of the d tables, probabilistically recirculate
+// if recirculated, updated value in min stage number
+// prob recirc uses table w/ predetermined entries
+
+// num entries for hash tables, precision p4 code has 32w65536
+const int entries = 128;
+size hsize = 7; // SIZE?? OR INT??
+// seeds for hash func
+const int HASH_SEED_1 = 22;
+const int HASH_SEED_2 = 33;
+
+/* reg arrays */
+// we have to break up flow id bc we don't get long enough regs in tofino
+global Array.t<<32>> fid_1_1 = Array.create(entries);
+global Array.t<<32>> fid_1_2 = Array.create(entries);
+global Array.t<<32>> fid_1_3 = Array.create(entries);
+global Array.t<<32>> fid_1_4 = Array.create(entries);
+global Array.t<<32>> counter_1 = Array.create(entries);
+global Array.t<<32>> fid_2_1 = Array.create(entries);
+global Array.t<<32>> fid_2_2 = Array.create(entries);
+global Array.t<<32>> fid_2_3 = Array.create(entries);
+global Array.t<<32>> fid_2_4 = Array.create(entries);
+global Array.t<<32>> counter_2 = Array.create(entries);
+
+// dummy array to compute min (size is 32w32 in precision)
+global Array.t<<32>> dummy_reg = Array.create(32);
+
+
+/* Events */
+// input: ipv4 src/dst addr, ipv4.protocol, vlan.vlan_id, tcp/udp src/dst ports, resubmit
+entry event ip_in (int src, int dst, int<<3>> resubmit, int<<8>> resubmitted_min_stage);
+// ip_out input: resubmit, routing info?
+exit event ip_out (int<<3>> resubmit, int<<8>> resubmitted_min_stage);
+
+/* Memops */
+memop fid_match(int memval, int newval) {
+	if (memval == newval) {
+		return 1;
+	} else {
+		return 0;
+	}
+}
+
+memop fid_set(int memval, int newval) {
+	return newval;
+}
+
+memop incr(int memval, int incrval) {
+	return memval+incrval;
+}
+
+memop read(int memval, int newval) {
+	return memval;
+}
+
+memop get_min(int memval, int diffval) {
+	if (diffval > 0x7fffff) { // negative
+		return 1;
+	} else {
+		return 2;
+	}
+}
+
+
+handle ip_in (int src, int dst, int<<3>> resubmit, int<<8>> resubmitted_min_stage) {
+	int<<1>> is_resubmitted = (int<<1>>) resubmit;
+	// compute flow id (4 parts)
+	// part 1 is ipv4 src, 2 is dst
+	// 3 is tcp/udp port --> concat values in lucid?? [15:0] = src, [31:16] = dst
+	// 4 is ipv4.protocol, vlan.vlan_id --> identity hash in lucid????
+	int fid_3 = 0;
+	int fid_4 = 0;	
+
+	// compute d hashes
+	// precision p4 --> hash seed, fid 1, 3w0, fid 2, 3w0, fid 3, fid 4 / hash seed, fid 1, 2w0, fid 2, 2w0, fid 3, 1w0, fid 4 
+	int<<hsize>> h1 = hash<<hsize>>(HASH_SEED_1,src,dst,fid_3,fid_4);
+	int<<hsize>> h2 = hash<<hsize>>(HASH_SEED_2,src,dst,fid_3,fid_4);
+
+	// for each stage, (if haven't already matched prev stg)
+	// if !recirc, check if match
+	int<<1>> match_1_1 = 0;
+	int<<1>> match_1_2 = 0;
+	int<<1>> match_1_3 = 0;
+	int<<1>> match_1_4 = 0;
+	int<<1>> match_2_1 = 0;
+	int<<1>> match_2_2 = 0;
+	int<<1>> match_2_3 = 0;
+	int<<1>> match_2_4 = 0;
+	// precision p4 code repeats if stmt so only one line of code per stmt (does it change resource allcation?
+	// or can lucid break up if stmt?
+	if (!is_resubmitted) {
+		match_1_1 = (int<<1>>) Array.getm(fid_1_1,h1,fid_match,src);
+		match_1_2 = (int<<1>>) Array.getm(fid_1_2,h1,fid_match,dst);
+		match_1_3 = (int<<1>>) Array.getm(fid_1_3,h1,fid_match,fid_3);
+		match_1_4 = (int<<1>>) Array.getm(fid_1_4,h1,fid_match,fid_4);
+	}
+	// if recirc and min stage - update flowid
+	else {
+		if (is_resubmitted && resubmitted_min_stage==1) {
+			Array.setm(fid_1_1,h1,fid_set,src);
+			Array.setm(fid_1_2,h1,fid_set,dst);
+			Array.setm(fid_1_3,h1,fid_set,fid_3);
+			Array.setm(fid_1_4,h1,fid_set,fid_4);
+		}
+	}
+
+	// if recirc and min stage, incr value
+	// if !recirc and match, incr value
+	// can we treat ints as bools???
+	int<<1>> match_1 = match_1_1 & match_1_2 & match_1_3 & match_1_4;
+	int c1 = 0;
+	if (is_resubmitted && resubmitted_min_stage==1) {
+		c1 = Array.update(counter_1,h1,incr,1,incr,1);
+	}
+	else {
+		if (match_1) {
+			c1 = Array.update(counter_1,h1,incr,1,incr,1);
+		}
+		else {
+			c1 = Array.getm(counter_1,h1,read,0);
+		}
+	}
+
+	if (!is_resubmitted && !match_1) {
+                match_2_1 = (int<<1>>) Array.getm(fid_2_1,h2,fid_match,src);
+                match_2_2 = (int<<1>>) Array.getm(fid_2_2,h2,fid_match,dst);
+                match_2_3 = (int<<1>>) Array.getm(fid_2_3,h2,fid_match,fid_3);
+                match_2_4 = (int<<1>>) Array.getm(fid_2_4,h2,fid_match,fid_4);
+	}
+	else {
+		if (is_resubmitted && resubmitted_min_stage==2) {
+                	Array.setm(fid_2_1,h2,fid_set,src);
+                	Array.setm(fid_2_2,h2,fid_set,dst);
+                	Array.setm(fid_2_3,h2,fid_set,fid_3);
+                	Array.setm(fid_2_4,h2,fid_set,fid_4);
+		}
+	}	
+	int<<1>> match_2 = match_2_1 & match_2_2 & match_2_3 & match_2_4;
+	int c2 = 0;
+	if (is_resubmitted && resubmitted_min_stage==2) {
+		c2 = Array.update(counter_2,h2,incr,1,incr,1);
+	}
+	else {
+		if (match_2) {
+			c2 = Array.update(counter_2,h2,incr,1,incr,1);
+		}
+		else {
+			c2 = Array.getm(counter_2,h2,read,0);
+		}
+	}
+
+	// compute min as you go
+	int diff = c1 - c2;
+	// CAN WE SET HDRS AS VALID IN LUCID?
+	resubmitted_min_stage = (int<<8>>) Array.getm(dummy_reg,0,get_min,diff);
+	if (resubmitted_min_stage == 1) {
+		int min_val = c1;
+	}
+	else {
+		if (resubmitted_min_stage == 2) {
+			int min_val = c2;
+		}
+	}
+	// if no match, prob recirc
+	if (!is_resubmitted && !match_1 && !match_2) {
+		// prob recirc MAT
+		// match on min_val and 2 random vals
+		// either no action or recirc
+		// recirc action --> ig_intr_dprsr_md.resubmit_type = 1;
+		// udpate ingress deparser to check for ^ 
+		// RANDOM NUMBER GENERATOR??
+		int rand = 0; // placeholder
+	}
+
+	generate ip_out(resubmit, resubmitted_min_stage);
+
+
+}
+
+
+
