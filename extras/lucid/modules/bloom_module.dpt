@@ -1,0 +1,112 @@
+/* simple bloom filter module (for set membership or counting) */
+// add to filter, read from filter, reset slot
+
+memop incr(int<<'a>> x, int<<'b>> y) {
+  return x + 1;
+}
+
+
+module BloomFilter : {
+    // constructor --> k is num hashes (arrays), m is num of bits (entries) in filter, idx_sz is size of hashed val (??????)
+    global type t<<'idx_sz, 'k, 'a>>;
+    constr t<<'idx_sz, 'k, 'a>> create(int m, int['k] seeds, bool counting, int thresh);
+
+    // fun defs
+    fun void add_to_struct_membership(t<<'idx_sz, 'k, 'a>> filter, 'any key) [start <= filter; end filter];
+    fun void add_to_struct_count(t<<'idx_sz, 'k, 'a>> filter, 'any key) [start <= filter; end filter];
+    fun bool check_membership(t<<'idx_sz, 'k, 'a>> filter, 'any key) [start <= filter; end filter];
+    fun bool check_count(t<<'idx_sz, 'k, 'a>> filter, 'any key) [start <= filter; end filter];
+    fun void reset_index(t<<'idx_sz, 'k, 'a>> filter, int<<'idx_sz>> idx) [start <= filter; end filter];
+
+} {
+
+    type t<<'idx_sz, 'k, 'a>> = {
+        Array.t<<'a>>['k] arrs;
+        int['k] hash_seeds;
+        int<<'idx_sz>> m;
+        bool counting;
+        int<<'a>> thresh;
+    }
+
+    constr t<<'idx_sz, 'k, 'a>> create(int m, int['k] seeds, bool counting, int thresh) = {
+        arrs = [Array.create(m) for i < 'k];
+        hash_seeds = seeds;
+        m = (int<<'idx_sz>>) m;
+        counting = c;
+        thresh = (int <<'a>>) thresh;
+    };
+
+    fun void add_to_struct_membership(t<<'idx_sz, 'k, 'a>> filter, 'any key) {
+        for (i < 'k) {
+            Array.set(filter#arrs[i], hash<<'idx_sz>>(filter#hash_seeds[i], key), 1);
+        }
+    }
+
+    fun void add_to_struct_count(t<<'idx_sz, 'k, 'a>> filter, 'any key) {
+        for (i < 'k) {
+            Array.setm(filter#arrs[i], hash<<'idx_sz>>(filter#hash_seeds[i], key), incr, 1);
+        }
+    }
+    fun bool check_membership(t<<'idx_sz, 'k, 'a>> filter, 'any key) {
+        bool result = true;
+        for (i < 'k) {
+            int<<'a>> x = Array.get(filter#arrs[i], hash<<'idx_sz>>(filter#hash_seeds[i], key));
+            result = result && x == 1;
+        }
+        return result;
+    }
+
+    fun bool check_count(t<<'idx_sz, 'k, 'a>> filter, 'any key) {
+        bool result = true;
+        for (i < 'k) {
+            int<<'a>> x = Array.get(filter#arrs[i], hash<<'idx_sz>>(filter#hash_seeds[i], key));
+            result = result && x < filter#thresh;
+        }
+        return result;
+    }
+
+
+    fun void reset_index(t<<'idx_sz, 'k, 'a>> filter, int<<'idx_sz>> idx) {
+        for (i < 'k) {
+            Array.set(filter#arrs[i], idx, 0);
+        }
+    }
+
+
+}
+
+
+// symbolic bloom filter --> pass in symbolic params
+
+symbolic int bits;
+symbolic size logbits;
+symbolic size hashes;
+symbolic int thresh;
+
+//global BloomFilter.t<<logbits, hashes, 1>> bf = BloomFilter.create(bits, [size_to_int(i) for i < hashes], false, 0);
+
+//const bool c = true;
+
+module Struct = BloomFilter if true else Cms;
+
+global Struct.t<<logbits, hashes, 32>> counter = Struct.create(bits, [size_to_int(i) for i < hashes], true, thresh);
+
+//global BloomFilter.t<<5, 2, 1>> bf = BloomFilter.create(32, [0;1], false, 0);
+
+
+
+entry event test (int src, int dst);
+exit event test_ex (bool mem);
+
+handle test (int src, int dst) {
+    bool mem = false;
+    //BloomFilter.reset_index(bf,0);
+    //BloomFilter.add_to_struct_membership(bf, [src;dst]);
+    //BloomFilter.check(bf, [src;dst]);
+    Struct.add_to_struct_count(counter, [src;dst]);
+    
+    generate test_ex(mem);
+
+}
+
+
