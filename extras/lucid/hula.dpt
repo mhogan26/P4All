@@ -15,8 +15,8 @@ size time_t = 48;
 const int<<24>> NUM_TORS = 512;
 size port_id_t = 9;
 const int<<util_t>> PROBE_FREQ_FACTOR = 6;
-const int<<time_t>> KEEP_ALIVE_THRESH = 48 <<< PROBE_FREQ_FACTOR;
-const int<<time_t>> FLOWLET_TOUT = 48 <<< 3;
+const int<<time_t>> KEEP_ALIVE_THRESH = 1 <<< PROBE_FREQ_FACTOR;
+const int<<time_t>> FLOWLET_TOUT = 1 <<< 3;
 // ^ 48w1
 
 
