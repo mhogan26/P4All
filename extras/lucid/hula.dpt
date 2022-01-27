@@ -185,7 +185,7 @@ handle hula_in(int srcAddr, int dstAddr, int<<8>> ipv4protocol, int<<16>> srcPor
     }
 
     if (!drop) {
-        int<<9>> egress_port = flow_h;
+        egress_port = flow_h;
         generate hula_out(hdr_path_util, egress_port);
         // to return --> hdr_path_util?, flow_h (ig_tm_md.ucast_egress_port = flow_h) OR egress_port
     }
