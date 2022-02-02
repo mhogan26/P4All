@@ -22,7 +22,7 @@ def move_simple(states, measurements, iteration, groundtruth):
     hash_w = math.log(cols,2)
     return [rows,int(cols),int(hash_w)]
 
-
+'''
 # simulated annealing algorithm
 def simulated_annealing(objective, bounds, n_iterations, step_size, temp):
 	# generate an initial point
@@ -54,6 +54,7 @@ def simulated_annealing(objective, bounds, n_iterations, step_size, temp):
 			# store the new current point
 			curr, curr_eval = candidate, candidate_eval
 	return [best, best_eval]
+'''
 
 # randomly choose cms rows/cols, given some bounds
 def sim_move():
@@ -62,6 +63,7 @@ def sim_move():
     #hash_w = math.log2(cols)
     return cols,rows
 
+# single step of simulated_annealing
 # we call this after we have TWO COSTS (call simple initially?)
 def simulated_annealing_step(curr_state, curr_cost, new_state, new_cost, best_state, best_cost, temp, iteration, step_size, bounds):
     # COST CALCULATION
@@ -81,13 +83,19 @@ def simulated_annealing_step(curr_state, curr_cost, new_state, new_cost, best_st
     rows = curr_state[0]+randint(-1*bounds[0],bounds[0])*step_size[0]
     if rows < 1:
         rows = 1
+    elif rows > 10:
+        rows = 10
     cols = 2**(math.log2(curr_state[1])+randint(-1*bounds[1],bounds[1]))*step_size[1]
     if cols < 2:
         cols = 2
+    elif cols > 2048:
+        cols = 2048
     new_state = [rows, int(cols)]
 
     return curr_state, curr_cost, new_state, best_state, best_cost, t
 
+
+# bayesian optimization
 
 
 
