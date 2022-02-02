@@ -52,7 +52,7 @@ handle ip_in (int<<9>> igr_port, int src, int dst, int flowid, int<<1>> hh) {
                 // incr value and calc min as we go
                 // NOTE: use memop for min calc bc it only needs 1 stage (uses stateful alu)
                 // if we use a conditional to compare, it breaks up the comparison and takes mult stages
-                min = Array.update(cms[i], idx, incr, 1, compute_min, min);
+                min = Array.update(cms[i], idx, compute_min, min, incr, 1);
 	}
 
 	/*
