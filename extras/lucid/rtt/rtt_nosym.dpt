@@ -1,0 +1,144 @@
+/* lucid version of measuring tcp rtt in data plane, spin'20 */
+/* aka precursor to fridge */
+/* match data pkts w corresponding acks to produce rtt sample */
+/* multi-stg hash table to record outgoing pkts, delete once matched */
+/* lazily expire and overwrite old records */
+
+
+/* consts */
+// tcp flags
+const int<<8>> TCP_FLAGS_F = 1; // fin
+const int<<8>> TCP_FLAGS_S = 2; // syn
+const int<<8>> TCP_FLAGS_R = 4; // rst
+const int<<8>> TCP_FLAGS_P = 8; // psh
+const int<<8>> TCP_FLAGS_A = 16; // ack
+//const int<<8>> tcp_s_a = TCP_FLAGS_S+TCP_FLAGS_A;
+const int<<8>> tcp_s_a = 18;
+//const int<<8>> tcp_a_p = TCP_FLAGS_A + TCP_FLAGS_P;
+const int<<8>> tcp_a_p = 24;
+const int TS_EXPIRE_THRESHOLD = 50000000;  // 50ms, 50*1000*1000
+const int TS_LEGITIMATE_THRESHOLD = 2000000000; // 2000*1000*1000
+
+/* Arrays */
+global PairArray.t<<32>> pkt_table_1 = PairArray.create(65536);
+
+
+/* Events */
+entry event tcp_in(int<<8>> tcp_flags, int<<16>> len, int<<4>> ihl, int<<4>> data_offset, int seq_no, int ack_no, int srcAddr, int dstAddr, int<<16>> srcPort, int<<16>> dstPort, int timestamp);
+exit event tcp_out(bool pkt_type, int rtt);
+
+/* Memops */
+// memval1 is signature, memval2 is timestamp
+memop insert(int memval1, int memval2, int newval1, int newval2) {
+    bool existing_timestamp_is_old = (newval2-memval2) > TS_EXPIRE_THRESHOLD;
+    bool current_entry_empty = memval1 == 0;
+
+    if (existing_timestamp_is_old || current_entry_empty) {
+        cell1 = newval1;
+    } 
+    if (existing_timestamp_is_old || current_entry_empty) {
+        cell2= newval2;
+    }
+    if (existing_timestamp_is_old || current_entry_empty) {
+        return 1;
+    }
+
+}
+
+memop read(int memval1, int memval2, int newval1, int newval2) {
+    bool current_entry_matched = memval1 == newval1;
+    bool timestamp_legitimate = (newval2 - memval2)<TS_LEGITIMATE_THRESHOLD;
+
+    if (current_entry_matched && timestamp_legitimate) {
+        cell1 = 0;
+    }
+    if (current_entry_matched && timestamp_legitimate) {
+        cell2 = 0;
+    }
+    if (current_entry_matched && timestamp_legitimate) {
+        return newval2-memval2;
+    }
+}
+
+
+fun void drop() {
+   int x = 1;
+}
+
+handle tcp_in(int<<8>> tcp_flags, int<<16>> len, int<<4>> ihl, int<<4>> data_offset, int seq_no, int ack_no, int srcAddr, int dstAddr, int<<16>> srcPort, int<<16>> dstPort, int timestamp) {
+    // decide if syn or ack
+    bool pkt_type = false;
+    match (tcp_flags, len) with
+    | TCP_FLAGS_S,_ -> {pkt_type=true;}
+    | tcp_s_a,_ -> {pkt_type=false;}
+    | TCP_FLAGS_A,0b0000000000****** -> {pkt_type=false;}
+    | TCP_FLAGS_A,0b000000000100**** -> {pkt_type=false;}
+    | TCP_FLAGS_A,0b0000000001010000 -> {pkt_type=false;}
+    | tcp_a_p,0b0000000000****** -> {pkt_type=false;}
+    | tcp_a_p,0b000000000100**** -> {pkt_type=false;}
+    | tcp_a_p,0b0000000001010000 -> {pkt_type=false;}
+    | _,0b000000********** -> {pkt_type=true;}
+    | _,0b0000010********* -> {pkt_type=true;}
+    | _,0b0000011000****** -> {pkt_type=true;}
+    | _,0b0000011001000000 -> {pkt_type=true;}
+    | TCP_FLAGS_R, _ -> {drop();}
+    | TCP_FLAGS_F, _ -> {drop();}
+    | _,_ -> {pkt_type=true;}
+
+
+    int expected_ack = 0;
+
+    /*
+    // if syn, compute e_ack
+        Hash<bit<32>>(HashAlgorithm_t.IDENTITY) copy32_1;
+        Hash<bit<32>>(HashAlgorithm_t.IDENTITY) copy32_2;
+    // ++ is concatenation in p4, ^ in lucid
+    if (pkt_type==true) {
+        ig_md.tmp_1=copy32_1.get({26w0 ++ hdr.ipv4.ihl ++ 2w0});
+        ig_md.tmp_2=copy32_2.get({26w0 ++ hdr.tcp.data_offset ++ 2w0});
+        ig_md.tmp_3=16w0 ++ hdr.ipv4.total_len;
+        ig_md.total_hdr_len_bytes=(ig_md.tmp_1+ig_md.tmp_2);
+        ig_md.total_body_len_bytes=ig_md.tmp_3 - ig_md.total_hdr_len_bytes;
+        ig_md.expected_ack=hdr.tcp.seq_no + ig_md.total_body_len_bytes;
+
+        if (tcp_flags==TCP_FLAGS_S) {
+            // compute_eack_last_if_syn();
+            ig_md.expected_ack=ig_md.expected_ack + 1;
+        }
+
+    }
+   */
+
+    if (pkt_type==true) {
+        expected_ack = seq_no + ((int<<32>>)len - ((int<<32>>)ihl + (int<<32>>)data_offset));
+        if (tcp_flags==TCP_FLAGS_S) {
+            expected_ack = expected_ack + 1;
+        }
+    }
+
+    // compute hash
+    int pkt_signature = 0;
+    int<<16>> hashed_location_1 = 0;
+    int<<4>> hash_val = 0;
+    if (pkt_type==true) {
+        pkt_signature = hash<<32>>(11, srcAddr, dstAddr, srcPort, dstPort, expected_ack);
+        hashed_location_1 = hash<<16>>(hash_val, srcAddr, dstAddr, srcPort, dstPort, expected_ack, hash_val);
+    } else {
+        pkt_signature = hash<<32>>(11, dstAddr, srcAddr, dstPort, srcPort, ack_no);
+        hashed_location_1 = hash<<16>>(hash_val, dstAddr, srcAddr, dstPort, srcPort, ack_no, hash_val);
+    }
+    // if syn, try to insert into table
+    // if ack, read from table
+    int rtt = 0; 
+    if (pkt_type==true) {
+        PairArray.update(pkt_table_1, hashed_location_1, insert, pkt_signature, timestamp, 0);
+    } else {
+        rtt = PairArray.update(pkt_table_1, hashed_location_1, read, pkt_signature, timestamp, 0);
+    }
+
+    // return computed RTT, to send to controller or do whatever
+    generate tcp_out(pkt_type, rtt);
+}
+
+
+
