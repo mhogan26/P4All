@@ -9,7 +9,7 @@
 symbolic int table_size;
 symbolic size tables;
 symbolic size log_tables;
-
+symbolic int TS_EXPIRE_THRESHOLD;
 
 /* consts */
 // tcp flags
@@ -22,7 +22,7 @@ const int<<8>> TCP_FLAGS_A = 16; // ack
 const int<<8>> tcp_s_a = 18;
 //const int<<8>> tcp_a_p = TCP_FLAGS_A + TCP_FLAGS_P;
 const int<<8>> tcp_a_p = 24;
-const int TS_EXPIRE_THRESHOLD = 50000000;  // 50ms, 50*1000*1000
+//const int TS_EXPIRE_THRESHOLD = 50000000;  // 50ms, 50*1000*1000
 const int TS_LEGITIMATE_THRESHOLD = 2000000000; // 2000*1000*1000
 
 /* Arrays */
