@@ -1,0 +1,130 @@
+/* lucid code for unbiased delay measurements (fridge algo) */
+/* rtt tunes overwriting frequency to mitigate bias, fridge aggressively overwrites and corrects bias as samples collected */
+/* correction factor = 1/(prob of sample surviving w/o eviction)
+   a sample counts as 1/prob samples (surviving samples can count for evicted ones too */
+/* fridge is a hashed-index array of size m w/ entering prob of p - new request accepted w prob p
+   survival prob decreases as req spends more time (measured by # insertions since req entered, maintained by global insertion counter)
+   average lifetime is m/p insertions */
+/* this is the single fridge case; multi-fridge case is single table spread across stages (single hash function), see sec4 in paper */
+
+/* consts */
+const int<<8>> TCP_FLAGS_S = 2; // syn
+const int<<8>> TCP_FLAGS_A = 16; // ack
+size ENTRY_PROB_LOG2 = 3;  // insert w/ prob 2^-ENTRY_PROB_LOG2
+const int fridge_size = 256;
+const int SEED = 11;
+size log_fridge = 8;
+
+/* symbolics */
+// fridge size (m) - array sizes
+// ENTRY_PROB_LOG2 (p)
+
+
+/* Arrays */
+global Array.t<<32>> insert_counter = Array.create(1);
+// 3 arrays, to store flowid, timestamp (for rtt calc), and insertion counter (to track time in fridge)
+global Array.t<<32>> fids = Array.create(fridge_size);
+global Array.t<<32>> timestamps = Array.create(fridge_size);
+global Array.t<<32>> inserts = Array.create(fridge_size);
+
+
+/* Events */
+entry event tcp_in(int<<8>> tcp_flags, int<<16>> len, int<<4>> ihl, int<<4>> data_offset, int seq_no, int srcAddr, int dstAddr, int<<16>> srcPort, int<<16>> dstPort, int ack_no, int timestamp);
+exit event tcp_out(int rtt, int insrtdiff, int<<1>> successful);
+
+
+/* Memops */
+memop incr(int memval, int newval) {
+    return memval+newval;
+}
+
+memop boolcompare(int memval, int newval) {
+    if (memval==newval) { return 1; }
+    else { return 0; }
+}
+memop resetcompare(int memval, int newval) {
+    if (memval==newval) { return 0; }
+    else { return memval; }
+}
+
+memop getdiff(int memval, int newval) {
+    return newval-memval;
+}
+
+
+handle tcp_in(int<<8>> tcp_flags, int<<16>> len, int<<4>> ihl, int<<4>> data_offset, int seq_no, int srcAddr, int dstAddr, int<<16>> srcPort, int<<16>> dstPort, int ack_no, int timestamp) {
+    // calc eack - same as rtt code (can we translate tofino PHV/casting things to lucid? identity hash, padding w/ 0s)
+    // test w/ tofino - will compiler complain about PHV? (maybe a compiler bug)
+    int eack = 0;
+    if (tcp_flags==TCP_FLAGS_S) {
+        eack = seq_no + ((int<<32>>)len - ((int<<32>>)ihl + (int<<32>>)data_offset));
+        if (tcp_flags==TCP_FLAGS_S) {
+            eack = eack + 1;
+        }
+    } 
+    int<<1>> successful = 0;
+    int rtt = 0;
+    int insrtdiff = 0;
+    // prototype measures handshake delay, but maybe can use table from rtt to measure rtt for entire connection?
+    if (tcp_flags==TCP_FLAGS_S) {
+        // compute flow id - 128 bits
+        int<<128>> fid=srcAddr^dstAddr^srcPort^dstPort^eack; 
+        // apply fridge algo
+        // gen random value that tells us if we're letting new item into fridge
+        int<<ENTRY_PROB_LOG2>> entropy = 0;
+        //if (ENTRY_PROB_LOG2!=0) { entropy = rng.get(); } // RANDOMIZE
+
+        // calc pkt sig and hash
+        int pkt_signature = hash<<32>>(SEED, fid);
+        int<<log_fridge>> hashed_location_1 = hash<<log_fridge>>(SEED, fid);
+        int insrtct = Array.update(insert_counter, 0, incr, 1, incr, 1);
+
+        if (entropy == 0) {
+            Array.set(fids, hashed_location_1, pkt_signature);
+            Array.set(timestamps, hashed_location_1, timestamp);
+            Array.set(inserts, hashed_location_1, insrtct);
+        }
+    } else {
+        if (tcp_flags==TCP_FLAGS_S + TCP_FLAGS_A) {
+            // compute flow id
+            int<<128>> fid=dstAddr^srcAddr^dstPort^srcPort^ack_no;
+            // apply fridge algo
+            // entropy???? (entropy != 0?)
+
+            // calc hash and sig
+            int pkt_signature = hash<<32>>(SEED, fid);
+            int<<log_fridge>> hashed_location_1 = hash<<log_fridge>>(SEED, fid);
+            // get current insertion count
+            int insrtct = Array.get(insert_counter, 0);
+            // check if fid matches
+            int matchfid = Array.update(fids, hashed_location_1, boolcompare, pkt_signature, resetcompare, pkt_signature);
+            if (matchfid == 1) {
+                rtt = Array.getm(timestamps, hashed_location_1, getdiff, timestamp);
+                insrtdiff = Array.getm(inserts, hashed_location_1, getdiff, insrtct);
+                successful = 1;
+            }
+        }
+    }
+
+    generate tcp_out(rtt, insrtdiff, successful);
+
+    // p4 prototype sends pkt back to sender
+
+    // in egress, p4 prototype maintains tally histogram
+
+}
+
+
+// fridge algo:
+// randomize - RNG in lucid????
+// p4: if == 0, entropy is bit<1>, else bit<ENTRY_PROB_LOG2>
+/*
+int<<ENTRY_PROB_LOG2>> entropy = 0;
+if (ENTRY_PROB_LOG2 != 0) { // ENTRY_PROB_LOG2==0 -> p=1, special case
+    entropy = rng.get();
+}
+*/
+// ENTROPY CHECK?
+
+
+

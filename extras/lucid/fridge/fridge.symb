@@ -1,0 +1,10 @@
+{
+  "sizes": {
+    "ENTRY_PROB_LOG2" : 3,
+    "log_fridge" : 8
+  },
+
+  "symbolics": {
+    "fridge_size" : 256
+  }
+}
