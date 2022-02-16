@@ -1,0 +1,11 @@
+{
+  "sizes": {
+    "tables" : 1,
+    "log_tables" : 16
+  },
+
+  "symbolics": {
+    "table_size" : 65536,
+    "TS_EXPIRE_THRESHOLD" : 50000000
+  }
+}
