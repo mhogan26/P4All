@@ -52,24 +52,33 @@ memop getdiff(int memval, int newval) {
     return newval-memval;
 }
 
+/* Externs */
+extern log_rttsample(int rtt, int insrtdiff);
+
 
 handle tcp_in(int<<8>> tcp_flags, int<<16>> len, int<<4>> ihl, int<<4>> data_offset, int seq_no, int srcAddr, int dstAddr, int<<16>> srcPort, int<<16>> dstPort, int ack_no, int timestamp) {
     // calc eack - same as rtt code (can we translate tofino PHV/casting things to lucid? identity hash, padding w/ 0s)
     // test w/ tofino - will compiler complain about PHV? (maybe a compiler bug)
     int eack = 0;
     if (tcp_flags==TCP_FLAGS_S) {
-        eack = seq_no + ((int<<32>>)len - ((int<<32>>)ihl + (int<<32>>)data_offset));
+        int<<32>> tmp_1=hash<<32>>(1,(int<<26>>)0 ^ ihl ^ (int<<2>>)0);
+        int<<32>> tmp_2=hash<<32>>(1,(int<<26>>)0 ^ data_offset ^ (int<<2>>)0);
+        int<<32>> tmp_3=(int<<16>>)0 ^ len;
+        int<<32>> tmp_4=tmp_1+tmp_2;
+        int<<32>> tmp_5=tmp_3-tmp_4;
+        eack = seq_no+tmp_5;
         if (tcp_flags==TCP_FLAGS_S) {
             eack = eack + 1;
         }
-    } 
+    }
+    
     int<<1>> successful = 0;
     int rtt = 0;
     int insrtdiff = 0;
     // prototype measures handshake delay, but maybe can use table from rtt to measure rtt for entire connection?
     if (tcp_flags==TCP_FLAGS_S) {
         // compute flow id - 128 bits
-        int<<128>> fid=srcAddr^dstAddr^srcPort^dstPort^eack; 
+        int<<128>> fid=srcAddr^dstAddr^srcPort^dstPort^eack;
         // apply fridge algo
         // gen random value that tells us if we're letting new item into fridge
         int<<ENTRY_PROB_LOG2>> entropy = 0;
@@ -79,7 +88,6 @@ handle tcp_in(int<<8>> tcp_flags, int<<16>> len, int<<4>> ihl, int<<4>> data_off
         int pkt_signature = hash<<32>>(SEED, fid);
         int<<log_fridge>> hashed_location_1 = hash<<log_fridge>>(SEED, fid);
         int insrtct = Array.update(insert_counter, 0, incr, 1, incr, 1);
-
         if (entropy == 0) {
             Array.set(fids, hashed_location_1, pkt_signature);
             Array.set(timestamps, hashed_location_1, timestamp);
@@ -103,6 +111,7 @@ handle tcp_in(int<<8>> tcp_flags, int<<16>> len, int<<4>> ihl, int<<4>> data_off
                 rtt = Array.getm(timestamps, hashed_location_1, getdiff, timestamp);
                 insrtdiff = Array.getm(inserts, hashed_location_1, getdiff, insrtct);
                 successful = 1;
+                log_rttsample(rtt, insrtdiff);
             }
         }
     }

@@ -101,31 +101,17 @@ handle tcp_in(int<<8>> tcp_flags, int<<16>> len, int<<4>> ihl, int<<4>> data_off
 
     int expected_ack = 0;
 
-    /*
     // if syn, compute e_ack
-        Hash<bit<32>>(HashAlgorithm_t.IDENTITY) copy32_1;
-        Hash<bit<32>>(HashAlgorithm_t.IDENTITY) copy32_2;
     // ++ is concatenation in p4, ^ in lucid
     if (pkt_type==true) {
-        ig_md.tmp_1=copy32_1.get({26w0 ++ hdr.ipv4.ihl ++ 2w0});
-        ig_md.tmp_2=copy32_2.get({26w0 ++ hdr.tcp.data_offset ++ 2w0});
-        ig_md.tmp_3=16w0 ++ hdr.ipv4.total_len;
-        ig_md.total_hdr_len_bytes=(ig_md.tmp_1+ig_md.tmp_2);
-        ig_md.total_body_len_bytes=ig_md.tmp_3 - ig_md.total_hdr_len_bytes;
-        ig_md.expected_ack=hdr.tcp.seq_no + ig_md.total_body_len_bytes;
-
+        int<<32>> tmp_1=hash<<32>>(1,(int<<26>>)0 ^ ihl ^ (int<<2>>)0);
+        int<<32>> tmp_2=hash<<32>>(1,(int<<26>>)0 ^ data_offset ^ (int<<2>>)0);
+        int<<32>> tmp_3=(int<<16>>)0 ^ len;
+        int<<32>> tmp_4=tmp_1+tmp_2;
+        int<<32>> tmp_5=tmp_3-tmp_4;
+        eack = seq_no+tmp_5;
         if (tcp_flags==TCP_FLAGS_S) {
-            // compute_eack_last_if_syn();
-            ig_md.expected_ack=ig_md.expected_ack + 1;
-        }
-
-    }
-   */
-
-    if (pkt_type==true) {
-        expected_ack = seq_no + ((int<<32>>)len - ((int<<32>>)ihl + (int<<32>>)data_offset));
-        if (tcp_flags==TCP_FLAGS_S) {
-            expected_ack = expected_ack + 1;
+            eack = eack + 1;
         }
     }
 
