@@ -11,6 +11,8 @@ symbolic size tables;
 symbolic size log_tables;
 symbolic int TS_EXPIRE_THRESHOLD;
 
+const int[tables] polynomials = [size_to_int(i)+2 for i<tables];
+
 /* consts */
 // tcp flags
 const int<<8>> TCP_FLAGS_F = 1; // fin
@@ -31,6 +33,12 @@ global PairArray.t<<32>>[tables] pkt_tables = [PairArray.create(table_size) for 
 /* Events */
 entry event tcp_in(int<<8>> tcp_flags, int<<16>> len, int<<4>> ihl, int<<4>> data_offset, int seq_no, int ack_no, int srcAddr, int dstAddr, int<<16>> srcPort, int<<16>> dstPort, int timestamp);
 exit event tcp_out(bool pkt_type, int rtt);
+exit event dropped();
+
+/* Externs */
+extern log_collision();
+extern log_timeout(bool timeout);
+extern log_rttsample(int sample);
 
 /* Memops */
 // memval1 is signature, memval2 is timestamp
@@ -44,6 +52,7 @@ memop insert(int memval1, int memval2, int newval1, int newval2) {
     if (existing_timestamp_is_old || current_entry_empty) {
         cell2= newval2;
     }
+    log_timeout(existing_timestamp_is_old);
     if (existing_timestamp_is_old || current_entry_empty) {
         return 1;
     }
@@ -65,14 +74,13 @@ memop read(int memval1, int memval2, int newval1, int newval2) {
     }
 }
 
-
 fun void drop() {
-   int x = 1;
+    generate dropped();
 }
 
 handle tcp_in(int<<8>> tcp_flags, int<<16>> len, int<<4>> ihl, int<<4>> data_offset, int seq_no, int ack_no, int srcAddr, int dstAddr, int<<16>> srcPort, int<<16>> dstPort, int timestamp) {
     // decide if syn or ack
-    bool pkt_type = false;
+    bool pkt_type = false;	// true is syn, false is ack
     match (tcp_flags, len) with
     | TCP_FLAGS_S,_ -> {pkt_type=true;}
     | tcp_s_a,_ -> {pkt_type=false;}
@@ -130,19 +138,21 @@ handle tcp_in(int<<8>> tcp_flags, int<<16>> len, int<<4>> ihl, int<<4>> data_off
         pkt_signature = hash<<32>>(11, srcAddr, dstAddr, srcPort, dstPort, expected_ack);
         for (i < tables) {
             if (rtt==0) {
-                int<<log_tables>> hashed_location_1 = hash<<log_tables>>(size_to_int(i), srcAddr, dstAddr, srcPort, dstPort, expected_ack);
+                int<<log_tables>> hashed_location_1 = hash<<log_tables>>(polynomials[i], srcAddr, dstAddr, srcPort, dstPort, expected_ack);
                 rtt = PairArray.update(pkt_tables[i], hashed_location_1, insert, pkt_signature, timestamp, 0);
             }
         }
+        if (rtt==0) { log_collision(); }
     } else {
         pkt_signature = hash<<32>>(11, dstAddr, srcAddr, dstPort, srcPort, ack_no);
         // for loop
         for (i < tables) {
             if (rtt==0) {
-                int<<log_tables>> hashed_location_1 = hash<<log_tables>>(size_to_int(i), dstAddr, srcAddr, dstPort, srcPort, ack_no);
+                int<<log_tables>> hashed_location_1 = hash<<log_tables>>(polynomials[i], dstAddr, srcAddr, dstPort, srcPort, ack_no);
                 rtt = PairArray.update(pkt_tables[i], hashed_location_1, read, pkt_signature, timestamp, 0);
             }
         }
+        if (rtt != 0) { log_rttsample(rtt); }
     }
 
     // return computed RTT, to send to controller or do whatever
