@@ -1,0 +1,170 @@
+symbolic rows;
+symbolic cols;
+symbolic KVS_ITEMS;
+
+
+typedef bit<32> ip4Addr_t;
+
+header ipv4_t {
+    bit<4>    version;
+    bit<4>    ihl;
+    bit<8>    diffserv;
+    bit<16>   totalLen;
+    bit<16>   identification;
+    bit<3>    flags;
+    bit<13>   fragOffset;
+    bit<8>    ttl;
+    bit<8>    protocol;
+    bit<16>   hdrChecksum;
+    ip4Addr_t srcAddr;
+    ip4Addr_t dstAddr;
+}
+
+header kvs_value_t {
+    bit<32>   value;
+    bit<1>    write;
+}
+
+struct custom_metadata_t {
+	bit<1> cache_exist;
+	bit<14> index;
+        bit<32> count_min;
+        bit<32>[rows] index;
+        bit<32>[rows] count;
+}
+struct headers {
+    ipv4_t       ipv4;
+    kvs_value_t   kvs_value1;
+    kvs_value_t   kvs_value2;
+    kvs_value_t   kvs_value3;
+    kvs_value_t   kvs_value4;
+}
+
+
+#define HASH_BASE 10w0
+#define HASH_MAX 10w1023
+
+control MyEgress {
+
+        register<bit<32>>(cols)[rows] counters;
+
+        action count() [i] {
+                hash(meta.index[i], HashAlgorithm.crc16, HASH_BASE,
+                      {hdr.ipv4.srcAddr, hdr.ipv4.dstAddr, hdr.ipv4.protocol}, HASH_MAX);
+
+                counters[i].read(meta.count[i], meta.index[i]);
+                meta.count[i] = meta.count[i] + 1;
+                counters[i].write(meta.index[i], meta.count[i]);
+        }
+
+        action set_min()[i]{
+                meta.count_min = meta.count[i];
+        }
+
+
+
+   register<bit<32>>(KVS_ITEMS)  key_value_regs1;
+   register<bit<32>>(KVS_ITEMS)  key_value_regs2;
+   register<bit<32>>(KVS_ITEMS)  key_value_regs3;
+   register<bit<32>>(KVS_ITEMS)  key_value_regs4;
+
+   action read_kvs1() {
+	key_value_regs1.read(hdr.kvs_value.value1, meta.index);
+   }
+   action read_kvs2() {
+        key_value_regs2.read(hdr.kvs_value.value2, meta.index);
+   }
+   action read_kvs3() {
+        key_value_regs3.read(hdr.kvs_value.value3, meta.index);
+   }
+   action read_kvs4() {
+        key_value_regs4.read(hdr.kvs_value.value4, meta.index);
+   }
+
+   action write_kvs1() {
+         key_value_regs1.write(meta.index, hdr.kvs_value.value1);
+   }
+   action write_kvs2() {
+         key_value_regs2.write(meta.index, hdr.kvs_value.value2);
+   }
+   action write_kvs3() {
+         key_value_regs3.write(meta.index, hdr.kvs_value.value3);
+   }
+   action write_kvs4() {
+         key_value_regs4.write(meta.index, hdr.kvs_value.value4);
+   }
+
+action check_cache_exist_act(index) {
+    meta.cache_exist = 1;
+    meta.index = index;
+}
+
+table check_cache_exist {
+    key={
+        hdr.kvs_value.key: exact;
+    }
+    actions={
+        check_cache_exist_act;
+    }
+    size = KVS_ITEMS;
+}
+
+
+    apply {
+                for (i < rows) {
+                        count()[i];
+                }
+
+
+                // finding min - conditions
+                for (i < rows) {
+                        if (meta.count[i] < meta.count_min) {
+                                set_min()[i];
+                        }
+                }
+	check_cache_exist.apply();
+	if (meta.cache_exist == 1) {
+		if (hdr.kvs_value.write == 0) {
+			read_kvs1();
+                        read_kvs2();
+                        read_kvs3();
+                        read_kvs4();
+		}
+		else if (hdr.kvs_value.write == 1) {
+			write_kvs1();
+                        write_kvs2();
+                        write_kvs3();
+                        write_kvs4();
+		}
+	}
+    }
+}
+
+
+maximize kvs_util {
+	function:
+		switch KVS_ITEMS {
+			case 0 {
+				scale -1
+			}
+			default {
+				sum(map(lambda y: 1.0/y**0.8,range(1,KVS_ITEMS+1)))
+			}
+		};
+	step: 100;
+
+}
+
+minimize cms_util {
+        function:
+                switch cols {
+                        case 0 {
+                                1
+                        }
+                        default {
+                                float(3)/float(cols)
+                        }
+                };
+        step: 32000;
+}
+
