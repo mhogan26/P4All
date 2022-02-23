@@ -109,13 +109,6 @@ while True:
     write_symb(rows,cols)
     iterations += 1
     '''
-'''
-end_time = time.time()
-print("BEST:")
-print(best_sol)
-print("TIME(s):")
-print(end_time-start_time)
-'''
 # we test the top x solutions to see if they compile --> if they do, we're done!
 # else, we can repeat above loop, excluding solutions we now know don't compile
 # (we have to have a harness p4 file for this step, but not for interpreter)
@@ -141,7 +134,7 @@ for sol in top_sols:
 '''
 
 
-def write_symb(sizes, symbolics, logs):
+def write_symb(sizes, symbolics, logs, symfile):
     # we often have symbolics that should = log2(some other symbolic)
     # in that case, we compute it here
     for var in logs:
@@ -156,7 +149,7 @@ def write_symb(sizes, symbolics, logs):
     concretes = {}
     concretes["sizes"] = sizes
     concretes["symbolics"] = symbolics
-    with open('cms_sym.symb', 'w') as f:
+    with open(symfile, 'w') as f:
         json.dump(concretes, f, indent=4)
 
 
@@ -178,7 +171,8 @@ def main():
     sizes = opt_info["symbolicvals"]["sizes"]
     symbolics = opt_info["symbolicvals"]["symbolics"]
     logs = opt_info["symbolicvals"]["logs"]
-    write_symb(sizes,symbolics,logs)
+    symfile = opt_info["symfile"]
+    write_symb(sizes,symbolics,logs,symfile)
 
     # import opt class that has funcs we need to get traffic, cost
     optmod = importlib.import_module(opt_info["optmodule"])
@@ -223,7 +217,9 @@ def main():
         random = True
     elif opt_info["optalgo"] == "simannealing":
         simanneal = True
-    bounds = opt_info["symbolicvals"]["bounds"]
+    bounds = {}
+    if "bounds" in opt_info["symbolicvals"]:    # not necessarily required for every opt, but def for random
+        bounds = opt_info["symbolicvals"]["bounds"]
 
     # start loop
     start_time = time.time()
@@ -267,11 +263,17 @@ def main():
         # should be ok though if we have deepcopy when we add to tested_sols
         symbolics_opt = random_opt(symbolics_opt, logs, bounds)
         update_sym_sizes(symbolics_opt, sizes, symbolics) # python passes dicts as reference, so this is fine
-        write_symb(sizes, symbolics, logs)
+        write_symb(sizes, symbolics, logs, symfile)
 
         # incr iterations
         iterations += 1
 
+
+    end_time = time.time()
+    print("BEST:")
+    print(best_sol)
+    print("TIME(s):")
+    print(end_time-start_time)
 
 if __name__ == "__main__":
     main()

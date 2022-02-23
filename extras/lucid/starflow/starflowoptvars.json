@@ -1,0 +1,32 @@
+{
+    "symbolicvals" : {
+	"sizes": {
+            "max_short_idx" : 1,
+	    "num_long" : 6,
+	    "log_s_slots" : 10,
+	    "log_l_slots" : 7
+	},
+	"symbolics": {
+	    "S_SLOTS" : 1024,
+	    "L_SLOTS" : 128
+	},
+        "logs": {
+	    "log_s_slots" : "S_SLOTS",
+	    "log_l_slots": "L_SLOTS"
+	},
+        "bounds" : {
+            "num_long" : [5,8],
+            "max_short_idx" : [1, 3],
+	    "S_SLOTS" : [64, 8192],
+	    "L_SLOTS" : [32, 4096]
+        }
+    },
+    "symfile" : "starflow.symb",
+    "lucidfile" : "starflow.dpt",
+    "outputfiles" : ["total.txt"],
+    "stop_iter" : 1,
+    "optalgo" : "random",
+    "optmodule" : "starflowopt",
+    "trafficpcap" : "univ1_pt1.pcap"
+
+}

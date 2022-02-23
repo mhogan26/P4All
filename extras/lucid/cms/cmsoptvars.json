@@ -9,6 +9,10 @@
 	},
 	"logs" : {
 	    "logcols" : "cols"
+	},
+        "bounds" : {
+	    "rows" : [1,10],
+	    "cols" : [2, 65536]
 	}
     },
     "symfile" : "cms_sym.symb",

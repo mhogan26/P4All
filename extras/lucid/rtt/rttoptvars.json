@@ -1,0 +1,28 @@
+{
+    "symbolicvars": {
+        "sizes" : {
+	    "tables" : 1,
+	    "log_tables" : 16
+        },
+	"symbolics" : {
+	    "table_size" : 65536,
+	    "TS_EXPIRE_THRESHOLD" : 50000000
+        },
+	"logs" : {
+	    "log_tables" : "table_size"
+	},
+	"bounds" : {
+	    "tables" : [5, 8],
+	    "table_size" : [64, 65536],
+	    "TS_EXPIRE_THRESHOLD" : [10000000, 100000000]
+        }
+    },
+    "symfile" : "rtt.symb",
+    "lucidfile" : "rtt.dpt",
+    "outputfiles" : ["collisions.txt", "timeouts.txt", "numsamples.txt"],
+    "stop_iter" : 1,
+    "optalgo" : "random",
+    "optmodule" : "rttopt",
+    "trafficpcap" : "univ1_pt1.pcap"
+
+}
