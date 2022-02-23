@@ -1,0 +1,22 @@
+{
+    "symbolicvals" : {
+	"sizes": {
+            "logcols": 7,
+	    "rows": 4
+	},
+	"symbolics": {
+	    "cols": 128
+	},
+	"logs" : {
+	    "logcols" : "cols"
+	}
+    },
+    "symfile" : "cms_sym.symb",
+    "lucidfile" : "cms_sym.dpt",
+    "outputfiles" : ["test.txt"],
+    "stop_iter" : 1,
+    "optalgo" : "random",
+    "optmodule" : "cmsopt",
+    "trafficpcap" : "univ1_pt1.pcap"
+
+}
