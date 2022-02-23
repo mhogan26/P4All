@@ -1,5 +1,5 @@
 # (user-provided) class containing functions necessary for optimization:
-#   gen traffic (as json), get ground truth, init function called each time we run interp iteration
+#   gen traffic (as json), init function called each time we run interp iteration
 
 import json
 from scapy.all import *
@@ -57,9 +57,6 @@ class Opt:
         with open('cms_sym.json', 'w') as f:
             json.dump(info, f, indent=4)
 
-    def get_ground_truth(self):
-        return self.ground_truth
-
     # called after every interp run
     # measurement is list of measurements (one measurement for each output file)
     # order in list is same ordered specified in opt json
@@ -71,7 +68,7 @@ class Opt:
         return float(s)/float(len(m))
 
     # called before every interp run
-    def init_iteration(self):
+    def init_iteration(self, symbs):
         pass
 
 

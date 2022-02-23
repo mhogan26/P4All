@@ -237,7 +237,7 @@ def main():
                 break
 
         # call init_iteration for opt class
-        o.init_iteration()
+        o.init_iteration(symbolics_opt)
 
         # run interp!
         m = interp_sim(opt_info["lucidfile"],opt_info["outputfiles"])
