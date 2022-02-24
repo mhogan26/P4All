@@ -1,4 +1,4 @@
-import sys, subprocess, os, ast, json, math, pickle, time, importlib, copy
+import subprocess, json, math, pickle, time
 from optalgos import *
 
 # this function runs interpreter with whatever symb file is in directory and returns measurement of interest
@@ -109,29 +109,6 @@ while True:
     write_symb(rows,cols)
     iterations += 1
     '''
-# we test the top x solutions to see if they compile --> if they do, we're done!
-# else, we can repeat above loop, excluding solutions we now know don't compile
-# (we have to have a harness p4 file for this step, but not for interpreter)
-# for now, we have a second lucid program that doesn't have interpreter sim measurements, this is the version we want to compile to tofino
-# NOTE: use vagrant vm to compile
-'''
-for sol in top_sols:
-    write_symb(sol[0],sol[1])
-    # compile lucid to p4
-    cmd_lp4 = ["../../dptc cms_sym_nomeasure.dpt ip_harness.p4 linker_config.json cms_sym_build --symb cms_sym.symb"]
-    ret_lp4 = subprocess.run(cmd_lp4, shell=True)
-    # we shouldn't have an issue compiling to p4, but check anyways
-    if ret_lp4.returncode != 0:
-        print("error compiling lucid code to p4")
-        break
-    # compile p4 to tofino
-    cmd_tof = ["cd cms_sym_build; make build"]
-    ret_tof = subprocess.run(cmd_tof, shell=True)
-    # return value of make build will always be 0, even if it fails to compile
-    # how can we check if it compiles????
-
-    # if compiles, break bc we've found a soluion
-'''
 
 
 def write_symb(sizes, symbolics, logs, symfile):
@@ -160,143 +137,26 @@ def update_sym_sizes(symbolics_opt, sizes, symbolics):
             continue
         if var in symbolics:
             symbolics[var] = symbolics_opt[var]
+    return sizes, symbolics
 
+def gen_cost(symbolics_opt,opt_info, o):
+    # gen symbolic file
+    update_sym_sizes(symbolics_opt, opt_info["symbolicvals"]["sizes"], opt_info["symbolicvals"]["symbolics"]) # python passes dicts as reference, so this is fine
+    write_symb(opt_info["symbolicvals"]["sizes"],opt_info["symbolicvals"]["symbolics"],opt_info["symbolicvals"]["logs"],opt_info["symfile"])
 
-# usage: python3 interp_sim.py <json opt info file>
-def main():
-    # import json file
-    opt_info = json.load(open(sys.argv[1]))
+    # compile to p4 (once new memops implemented) and check if stgs <= tofino --> what to return if it takes too many stgs/doesn't compile? inf cost? boolean?
 
-    # write init symb file
-    sizes = opt_info["symbolicvals"]["sizes"]
-    symbolics = opt_info["symbolicvals"]["symbolics"]
-    logs = opt_info["symbolicvals"]["logs"]
-    symfile = opt_info["symfile"]
-    write_symb(sizes,symbolics,logs,symfile)
+    # call init_iteration for opt class
+    o.init_iteration(symbolics_opt)
 
-    # import opt class that has funcs we need to get traffic, cost
-    optmod = importlib.import_module(opt_info["optmodule"])
-    o = optmod.Opt(opt_info["trafficpcap"])
+    # run interp!
+    m = interp_sim(opt_info["lucidfile"],opt_info["outputfiles"])
 
-    # gen traffic
-    o.gen_traffic()
+    # pass measurement(s) to cost func, get cost of sol
+    cost = o.calc_cost(m)
 
-    # init vars for interp loop
-    iterations = 0
-    # it's easier for gen next values if we exclude logs and don't separate symbolics/sizes, so let's do that here
-    symbolics_opt = {}
-    # is there a better way to merge? quick solution for now
-    for var in sizes:
-        if var not in logs:
-            symbolics_opt[var] = sizes[var]
-    for var in symbolics:
-        if var not in logs:
-            symbolics_opt[var] = symbolics[var]
-    # init best solution as starting, and best cost as inf
-    best_sol = copy.deepcopy(symbolics_opt)
-    best_cost = float("inf")
-    # keep track of sols we've already tried so don't repeat
-    tested_sols = []
-    # decide if we're stopping by time, iterations, or both (whichever reaches thresh first)
-    iters = False
-    simtime = False
-    iter_time = False
-    if "stop_iter" in opt_info:
-        iters = True
-    if "stop_time" in opt_info:
-        simtime = True
-    if iters and simtime:
-        iter_time = True
-    # decide if we're using a builtin algo, or user-provided
-    random = False
-    simanneal = False
-    user = False
-    if "optalgofile" in opt_info:   # only include field in json if using own algo
-        user = True
-    elif opt_info["optalgo"] == "random":    # if not using own, should for sure have optalgo field
-        random = True
-    elif opt_info["optalgo"] == "simannealing":
-        simanneal = True
-    bounds = {}
-    if "bounds" in opt_info["symbolicvals"]:    # not necessarily required for every opt, but def for random
-        bounds = opt_info["symbolicvals"]["bounds"]
+    return cost
 
-    # start loop
-    start_time = time.time()
-    while True:
-        # check iter/time conditions
-        if iters or iter_time:
-            if iterations >= opt_info["stop_iter"]:
-                break
-        if simtime or iter_time:
-            if (time.time()-start_time) >= opt_info["stop_time"]:
-                break
-
-        # call init_iteration for opt class
-        o.init_iteration(symbolics_opt)
-
-        # run interp!
-        m = interp_sim(opt_info["lucidfile"],opt_info["outputfiles"])
-
-        # pass measurement(s) to cost func, get cost of sol
-        cost = o.calc_cost(m)
-
-        # add sol to tested_sols to count it as already evaluated
-        # is it stupid to do deepcopy here? can we be smarter about changing symbolics_opt to avoid this? or is it a wash?
-        tested_sols.append(copy.deepcopy(symbolics_opt))
-
-        # compile to p4 (once new memops implemented) and check if stgs <= tofino
-        # if new cost < best, replace best (if stgs <= tofino)
-        if cost < best_cost:
-            best_cost = cost
-            # not sure if this is slow, but these dicts are likely small (<10 items) so shouldn't be an issue
-            best_sol = copy.deepcopy(symbolics_opt)
-
-        # gen next concrete vals and write the symb file
-        #symbolics_opt["cols"] = 32
-        #symbolics_opt["rows"] = 1
-        # if using our builtins, call appropriate func here
-        # else, call user's code
-        # pass in tested_sols? or handle that here?
-        # either case should be updating symbolics_opt --> symbolics_opt = FUNCALL
-        # be careful with how we set symbolics_opt in function, bc we don't want it to change what's in tested_sols
-        # should be ok though if we have deepcopy when we add to tested_sols
-        symbolics_opt = random_opt(symbolics_opt, logs, bounds)
-        update_sym_sizes(symbolics_opt, sizes, symbolics) # python passes dicts as reference, so this is fine
-        write_symb(sizes, symbolics, logs, symfile)
-
-        # incr iterations
-        iterations += 1
-
-
-    end_time = time.time()
-    print("BEST:")
-    print(best_sol)
-    print("TIME(s):")
-    print(end_time-start_time)
-
-if __name__ == "__main__":
-    main()
-
-
-
-'''
-json fields:
-    symbolicvals:
-        sizes: symbolic sizes and starting vals
-        symbolics: symbolic vals (ints, bools) and starting vals
-        logs: which (if any) symbolics are log2(another symbolic)
-        bounds: [lower,upper] bounds for symbolics (don't need to include logs, bc they're calculated from other syms)
-    symfile: file to write symbolics to
-    lucidfile: dpt file
-    outputfiles: list of files that output is stored in (written to by externs)
-    stop_iter: num iterations to stop at
-    stop_time: time to stop at (in seconds)
-    optalgo: if using one of our provided functions, tell us the name
-    optalgofile: if using your own, tell us where to find it (python file)
-    optmodule: name of module that has class w/ necessary funcs
-    trafficpcap: name of pcap file to use
-'''
 
 
 
