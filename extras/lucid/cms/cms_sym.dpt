@@ -5,10 +5,8 @@ symbolic int cols;
 symbolic size rows; 
 symbolic size logcols;
 
-// NOTE: this doesn't work w/ lucid typechecking rn, so commenting this out
-// len of this bounds number of rows we can have in the sketch
-// e.g., this limits us to at most 8 rows
-//const int[8] hash_seeds = [22;33;44;55;66;77;88;99];
+// hash polynomials (we're skipping 1 bc it's identity)
+//const int[rows] polynomials = [size_to_int(i)+2 for i<rows];
 
 // threshold for hh
 const int thresh = 100;
