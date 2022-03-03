@@ -13,10 +13,6 @@
         "bounds" : {
 	    "rows" : [1,10],
 	    "cols" : [2, 65536]
-	},
-	"priority" : {
-	    "cols" : "higher",
-	    "rows" : "higher"
 	}
     },
     "optparams": {
