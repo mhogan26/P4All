@@ -6,6 +6,7 @@ import numpy as np
 from scipy.optimize import basinhopping
 
 # helper funcs
+'''
 # narrow down best sols to 1, using priority
 # is there a better/simpler way to do this?????
 # NOTE: might want to save original list of solutions, in case one we choose doesn't compile to tofino (more sols to try before we're forced to rerun optimize)
@@ -40,13 +41,18 @@ def prioritize(best_sols, opt_info):
                     quit()
 
             to_remove.sort(reverse=True)    # throw out solutions that don't match priority
-            print(to_remove)
-            print(best_sols)
-            print("BEFORE POP")
+            to_remove=list(set(to_remove))  # get rid of duplicates
             for i in to_remove:
                 best_sols.pop(i)
             best_sol[1] = best_sols.index(best_sol[0])  # in case things get shuffled around after pops
     return best_sol[0]
+'''
+# helper for sim annealing, rounds to closest power of 2
+# copied from: https://stackoverflow.com/questions/28228774/find-the-integer-that-is-closest-to-the-power-of-two
+def closest_power(x):
+    possible_results = math.floor(math.log2(x)), math.ceil(math.log2(x))
+    return 2**min(possible_results, key= lambda z: abs(x-2**z))
+
 
 
 # RANDOM OPTIMIZATION
@@ -117,66 +123,15 @@ def random_opt(symbolics_opt, opt_info, o):
         iterations += 1
 
     # if we have multiple solutions equally as good, use priority from user to narrow it down to 1
-    best_sol = prioritize(best_sols,opt_info)
-    return best_sol, best_cost
+    #best_sol = prioritize(best_sols,opt_info)
 
-
-'''
-# SIMULATED ANNEALING/BASIN HOPPING
-# good for objective functions that have single global optima and mult local optima where search might get stuck
-# TODO: there's a bug here somewhere
-# single step of simulated_annealing
-# we call this after we have TWO COSTS (call simple initially?)
-def simulated_annealing_step(curr_state, curr_cost, new_state, new_cost, best_state, best_cost, temp, iteration, step_size, bounds):
-    # COST CALCULATION
-    if new_cost < best_cost or (new_cost==best_cost and (new_state[0]*new_state[1])<=(best_state[0]*best_state[1])):
-    #if new_cost < best_cost or (new_cost==best_cost and new_state[1]<=best_state[1])
-        best_state = new_state
-        best_cost = new_cost
-
-    diff = new_cost - curr_cost
-    t = temp / float(iteration+1)
-    if t==0:
-        print("ZERO TEMP")
-        print(iteration)
-        print(temp)
-        quit()
-    try:
-        metropolis = math.exp(-diff/t)
-    except OverflowError:
-        metropolis = float('inf')
-    if diff < 0 or random() < metropolis:
-        curr_state, curr_cost = new_state, new_cost
-
-    # gen next step
-    # random value w/in bounds
-    #new_state = sim_move()
-    rows = curr_state[0]+randint(-1*bounds[0],bounds[0])*step_size[0]
-    if rows < 1:
-        rows = 1
-    elif rows > 10:
-        rows = 10
-    cols = 2**(math.log2(curr_state[1])+randint(-1*bounds[1],bounds[1]))*step_size[1]
-    if cols < 2:
-        cols = 2
-    elif cols > 2048:
-        cols = 2048
-    new_state = [rows, int(cols)]
-
-    return curr_state, curr_cost, new_state, best_state, best_cost, t
-'''
-
-
-# helper for sim annealing, rounds to closest power of 2
-# copied from: https://stackoverflow.com/questions/28228774/find-the-integer-that-is-closest-to-the-power-of-two
-def closest_power(x):
-    possible_results = math.floor(math.log2(x)), math.ceil(math.log2(x))
-    return 2**min(possible_results, key= lambda z: abs(x-2**z))
+    # return the first solution in list of acceptable sols
+    return best_sols[0], best_cost
 
 
 # SIMULATED ANNEALING
 # copied from: https://machinelearningmastery.com/simulated-annealing-from-scratch-in-python/
-# def random_opt(symbolics_opt, opt_info, o):
+# good for objective functions that have single global optima and mult local optima where search might get stuck
 # using numpy.random.randn() - gaussian distr (gives us negative vals, so can move up and down)  
 # some notes on step size:
 #   if the var has large search space, probably want larger step size
@@ -236,9 +191,10 @@ def simulated_annealing(symbolics_opt, opt_info, o):
             # store the new current point
             curr, curr_cost = copy.deepcopy(symbolics_opt), candidate_cost
 
-    best_sol = prioritize(best_sols,opt_info)
+    #best_sol = prioritize(best_sols,opt_info)
 
-    return best_sol, best_cost
+    # return first sol in list of sols
+    return best_sols[0], best_cost
 
 '''
 # BASIN HOPPING (with scipy, like sim annealing)
