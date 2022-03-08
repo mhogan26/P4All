@@ -150,7 +150,7 @@ def simulated_annealing(symbolics_opt, opt_info, o):
     curr, curr_cost = copy.deepcopy(symbolics_opt), best_cost
 
     # run the algorithm
-    for i in range(opt_info["optparams"]["stop_iter"]):
+    for i in range(opt_info["optparams"]["stop_iter"]-1):   # minus 1 bc counting init cost as iteration
         # take a step
         for s in step_size:
             # random step with gaussian distr, with mean = curr[s] and stddev = step_size[s]
