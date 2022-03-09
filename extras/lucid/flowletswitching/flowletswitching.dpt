@@ -1,0 +1,84 @@
+// load-balancing that sends flowlets on randomly chosen next hop (using hashing),
+// provided bursts are separated by long enough interval to ensure no out of order
+// when get new pkt, hash to last time to see if it's new flowlet or part of current one
+// if part of current one, grab saved hop from mem and send pkt through that port
+// else, compute new hop (hash id, arrival time % num_outputs), saved hop = new hop
+// based on example from domino paper: http://web.mit.edu/domino/
+
+/* consts */
+const int num_hops = 4;	// number of possible hops (needs to be power of 2, or else need to use MATs)
+const int poly1 = 10398247;
+const int poly2 = 1295981879;
+size time_t = 48;
+
+/* symbolics */
+symbolic int flowlets;	// number of flowlets we can support (num slots in array)
+symbolic size log_flowlets;	// for hashing
+symbolic int IPG_thresh;	// length between flowlets (in nsec) - should this be symbolic??
+
+/* arrays */
+global Array.t<<32>> flowlet_time = Array.create(flowlets);
+global Array.t<<32>> saved_hops = Array.create(flowlets);
+
+/* events */
+entry event ip_in(int<<time_t>> arr_time, int srcaddr, int dstaddr, int<<16>> srcport, int<<16>> dstport, int<<8>> protocol);
+exit event ip_out(int<<9>> egress_port);
+
+/* externs */
+extern log_newflowlethop(int hop, bool thresh);	// count the number of flowlets sent across each path
+extern log_pkthop(int<<9>> hop);	// count the number of pkts sent across each path
+extern log_test(int hop, int timedelta);
+extern log_testmemops(int hop, int timedelta);
+
+/* memops */
+memop gettimedelta(int memval, int newval) {
+    return newval-memval;
+}
+memop setf_time(int memval, int newval) {
+    return newval;
+}
+memop choosehop(int memval, int newval, int timedelta) {
+    bool flowlet_thresh = timedelta > IPG_thresh;
+    if (flowlet_thresh) { cell1 = newval; }
+    else { 
+        if (!flowlet_thresh) { cell1 = memval; }
+    }
+    //log_newflowlethop(newval, flowlet_thresh);
+    log_testmemops(newval, timedelta);
+    if (!flowlet_thresh) { return memval; }
+}
+
+/* handlers */
+handle ip_in(int<<time_t>> arr_time, int srcaddr, int dstaddr, int<<16>> srcport, int<<16>> dstport, int<<8>> protocol) {
+    // hash to flowlet_time, update the time stored there and return delta
+    int<<log_flowlets>> idx = hash<<log_flowlets>>(poly1,srcaddr,dstaddr,srcport,dstport,protocol);
+
+    // compute difference between time of this pkt and last pkt of this flow
+    // storing time as 32 bits, tofino doesn't support 48 bit registers
+    int timedelta = Array.update(flowlet_time, idx, gettimedelta, (int<<32>>)arr_time, setf_time, (int<<32>>)arr_time);
+
+    // compute hash for hop 
+    // making it 32 bits for now, then casting to 9 bits for egress_port
+    int hophash = hash<<32>>(poly2,srcaddr,dstaddr,srcport,dstport,protocol,arr_time);
+
+    // gonna have to hard code mat entries for hash, bc can't do modulo unless power of 2
+    // fine for example but super annoying and would rather have more dynamic way of generating entries
+    // using bit shifts for simple example, bc we can set num_hops = power of 2
+    // for num_hops = 4, hash mod 4 = hash & 00000011 = hash & 3
+    int newhop = hophash & (num_hops - 1);
+
+    log_test(newhop,timedelta);
+
+    // in memops, if delta is > thresh, forward on new hop (from hash)
+    // else, return saved hop and forward pkt
+    // newhop is default return, so if we don't hit the if case that contains return stmt, memop returns newhop
+    int<<9>> egress_port = (int<<9>>) Array.update_complex(saved_hops, idx, choosehop, newhop, timedelta, newhop);
+
+    //log_pkthop(egress_port);
+
+    generate ip_out(egress_port);
+
+}
+
+
+

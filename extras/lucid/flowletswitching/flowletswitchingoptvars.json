@@ -1,0 +1,33 @@
+{
+    "symbolicvals" : {
+	"sizes": {
+	    "log_flowlets": 10
+	},
+	"symbolics": {
+	    "flowlets" : 1024,
+	    "IPG_thresh": 50000
+	},
+	"logs" : {
+	    "log_flowlets" : "flowlets"
+	},
+        "bounds" : {
+	    "flowlets" : [2,65536],
+	    "IPG_thresh" : [50000, 50000]
+	}
+    },
+    "optparams": {
+        "optalgo" : "simannealing",
+	"stop_iter" : 1,
+	"temp" : 10,
+	"stepsize": {
+	    "cols" : 200,
+	    "rows" : 2
+	}
+    },
+    "symfile" : "flowletswitching.symb",
+    "lucidfile" : "flowletswitching.dpt",
+    "outputfiles" : ["flowlethops.txt"],
+    "optmodule" : "flowletswitchingopt",
+    "trafficpcap" : "univ1_pt1.pcap"
+
+}

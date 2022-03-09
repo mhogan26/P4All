@@ -1,0 +1,26 @@
+{
+    "entry" : 
+    [
+        {
+            "event" : "ip_in",
+            "conditions" : {"hdr.ip.isValid()" : [true], "ig_intr_md.ingress_port" : [128]},
+            "inputs" : {
+		"arr_time":"ig_prsr_md.global_tstamp",
+		"srcaddr":"hdr.ip.src_addr",
+		"dstaddr":"hdr.ip.dst_addr",
+		"srcport":"hdr.tcp.srcPort",
+		"dstport":"hdr.tcp.dstPort",
+		"protocol":"hdr.ip.protocol"
+            }
+        }
+    ],
+    "exit" : 
+    [
+        {
+            "event" : "ip_out",
+            "outputs" : {
+                "ig_tm_md.ucast_egress_port" : "egress_port" 
+            }
+        }
+    ]
+}
