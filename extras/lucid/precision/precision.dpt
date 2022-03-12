@@ -72,8 +72,8 @@ handle ip_in (int srcaddr, int dstaddr, int<<16>> sport, int<<16>> dport, int<<8
     // part 1 is ipv4 srcaddr, 2 is dstaddr
     // 3 is ports concatenated, [15:0] = src, [31:16] = dst
     // 4 is ipv4.protocol, vlan.vlan_id, concat w identity hash
-    int fid_3 = sport ^ dport;
-    int fid_4 = hash<<32>>(1, proto, vlan_id, (int<<12>>)0);
+    int fidvar_3 = sport ^ dport;
+    int fidvar_4 = hash<<32>>(1, proto, vlan_id, (int<<12>>)0);
 
 
 	// add matched var that we set to 1 if match anywhere, then we can skip the work for rest of arrays
@@ -83,7 +83,7 @@ handle ip_in (int srcaddr, int dstaddr, int<<16>> sport, int<<16>> dport, int<<8
 	for (i < tables) {
 		// compute hash
 		// TODO: seeds/polys, random 0s? diff lengths?
-		int<<logentries>> idx = hash<<logentries>>(poly1,srcaddr,dstaddr,fid_3,fid_4);
+		int<<logentries>> idx = hash<<logentries>>(poly1,srcaddr,dstaddr,fidvar_3,fidvar_4);
 
 		// init match vars, for each fid entry
 		int<<1>> match_1 = 0;
@@ -96,15 +96,15 @@ handle ip_in (int srcaddr, int dstaddr, int<<16>> sport, int<<16>> dport, int<<8
 		if (is_resubmitted==0 && !matched) {
 			match_1 = (int<<1>>) Array.getm(fid_1[i],idx,fid_match,srcaddr);
             match_2 = (int<<1>>) Array.getm(fid_2[i],idx,fid_match,dstaddr);
-            //match_3 = (int<<1>>) Array.getm(fid_3[i],idx,fid_match,fid_3);
-            //match_4 = (int<<1>>) Array.getm(fid_4[i],idx,fid_match,fid_4);
+            match_3 = (int<<1>>) Array.getm(fid_3[i],idx,fid_match,fidvar_3);
+            match_4 = (int<<1>>) Array.getm(fid_4[i],idx,fid_match,fidvar_4);
 		}
 		// else if resubmit and we're in the right stage, update flow id
 		else if (is_resubmitted==1 && resubmitted_min_stage==(int<<8>>)(size_to_int(i)+1)) {
 			Array.set(fid_1[i],idx,srcaddr);
 			Array.set(fid_2[i],idx,dstaddr);
-			//Array.set(fid_3[i],idx,fid_3);
-        	//Array.set(fid_4[i],idx,fid_4);
+			Array.set(fid_3[i],idx,fidvar_3);
+        	Array.set(fid_4[i],idx,fidvar_4);
 		}
 
 		// check if we matched this array, and update matched
