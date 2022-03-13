@@ -16,31 +16,40 @@ symbolic size logentries;
 symbolic size tables;
 
 
-// TODO: POLYS/SEEDS, DUMMY REGS - MORE THAN 1?
-
+// TODO: SEEDS, DUMMY REGS - MORE THAN 1?
+// TODO: INTS ARE UNSIGNED
 
 /* consts */
-// polys for hash func (from precision p4 code)
-// CAN WE HAVE 16 BIT HASH POLYNOMIALS IN LUCID
-const int<<16>> poly1 = 32773;
-const int<<16>> poly2 = 15717;
-// no clue why these need to be different widths
+// no clue why these need to be different widths for each hash call
 const int<<3>> HASH_SEED_1 = 2;
 const int<<5>> HASH_SEED_2 = 17;
 
 
-/* reg arrays */
+/* record for symbolic arrays that are interleaved in loop */
 // we have to break up flow id bc we don't get long enough regs in tofino
-global Array.t<<32>>[tables] fid_1 = [Array.create(entries) for i<tables];
-global Array.t<<32>>[tables] fid_2 = [Array.create(entries) for i<tables];
-global Array.t<<32>>[tables] fid_3 = [Array.create(entries) for i<tables];
-global Array.t<<32>>[tables] fid_4 = [Array.create(entries) for i<tables]; 
-global Array.t<<32>>[tables] counter = [Array.create(entries) for i<tables];
-
-
 // dummy array to compute min/compare 2 32-bit numbers (size is 32w32 in precision p4 code)
 // precision p4 code has 32 entries, but we don't need more than 1?
-global Array.t<<32>>[tables] dummy_reg = [Array.create(1) for i<tables];
+type precisionregs<<'a>> = {
+    Array.t<<'a>> fid_1;
+    Array.t<<'a>> fid_2;
+    Array.t<<'a>> fid_3;
+    Array.t<<'a>> fid_4;
+    Array.t<<'a>> counter;
+    Array.t<<'a>> dummy_reg;
+}
+
+constr precisionregs<<'a>> create_precisionregs(int ent) = {
+    fid_1 = Array.create(ent);
+    fid_2 = Array.create(ent);
+    fid_3 = Array.create(ent);
+    fid_4 = Array.create(ent);
+    counter = Array.create(ent);
+    dummy_reg = Array.create(1);
+};
+
+// create symbolic records
+global precisionregs<<32>>[tables] arrs = [create_precisionregs(entries) for i<tables];
+
 
 /* Events */
 // input: ipv4 src/dst addr, ipv4.protocol, vlan.vlan_id, tcp/udp src/dst ports, resubmit
@@ -76,72 +85,71 @@ handle ip_in (int srcaddr, int dstaddr, int<<16>> sport, int<<16>> dport, int<<8
     int fidvar_4 = hash<<32>>(1, proto, vlan_id, (int<<12>>)0);
 
 
-	// add matched var that we set to 1 if match anywhere, then we can skip the work for rest of arrays
-	bool matched = false;
-	// min var to keep track of which entry we should replace if we recirc
-	int min_val = 0x7fffff;	// signed ints? set this to max value
-	for (i < tables) {
-		// compute hash
-		// TODO: seeds/polys, random 0s? diff lengths?
-		int<<logentries>> idx = hash<<logentries>>(poly1,srcaddr,dstaddr,fidvar_3,fidvar_4);
-
-		// init match vars, for each fid entry
-		int<<1>> match_1 = 0;
-		int<<1>> match_2 = 0;
-		int<<1>> match_3 = 0;
-		int<<1>> match_4 = 0;
-
-		// FLOW ID
-		// if not resubmit and matched = 0, check if fid matched
-		if (is_resubmitted==0 && !matched) {
-			match_1 = (int<<1>>) Array.getm(fid_1[i],idx,fid_match,srcaddr);
-            match_2 = (int<<1>>) Array.getm(fid_2[i],idx,fid_match,dstaddr);
-            match_3 = (int<<1>>) Array.getm(fid_3[i],idx,fid_match,fidvar_3);
-            match_4 = (int<<1>>) Array.getm(fid_4[i],idx,fid_match,fidvar_4);
-		}
-		// else if resubmit and we're in the right stage, update flow id
-		else if (is_resubmitted==1 && resubmitted_min_stage==(int<<8>>)(size_to_int(i)+1)) {
-			Array.set(fid_1[i],idx,srcaddr);
-			Array.set(fid_2[i],idx,dstaddr);
-			Array.set(fid_3[i],idx,fidvar_3);
-        	Array.set(fid_4[i],idx,fidvar_4);
-		}
-
-		// check if we matched this array, and update matched
-		int<<1>> match_stg = match_1 & match_2 & match_3 & match_4;
-		// check resources on this, how many does it use?
-		matched = (match_stg==1) || matched; 
-
-		// COUNTER
-		int c = 0;
-		// if resubmitted and right stage, incr counter
-		if (is_resubmitted==1 && resubmitted_min_stage==(int<<8>>)(size_to_int(i)+1)) {
-			c = Array.update(counter[i],idx,incr,1,incr,1);
-		}
-		else {
-			if (match_stg==1) {	// else if match, incr counter
-				c = Array.update(counter[i],idx,incr,1,incr,1);
-			}
-			else {	// else grab counter value
-				c = Array.get(counter[i],idx);
-			}
-		}
-
-		// MIN COMP, compute as we go
-		int diff = c - min_val;	// negative --> new min value; pos --> keep min
-		// using dummy reg here to do comparison in stateful ALU
-		// TODO: check resource usage here; do we need 2 dummy regs? we have to keep track of min as we go, so need to update min_val and stg
-		//	if ifstmt uses too many resources (hopefully single bit won't), need another dummy reg bc can't update 2 vars with one reg
-		int<<1>> to_update = (int<<1>>) Array.getm(dummy_reg[i],0,get_min,diff);
-		if (to_update==1) {
-			min_val = c;
-			resubmitted_min_stage = (int<<8>>)size_to_int(i) + 1;
-		}
-
-	}
+    // add matched var that we set to 1 if match anywhere, then we can skip the work for rest of arrays
+    bool matched = false;
+    // min var to keep track of which entry we should replace if we recirc
+    int min_val = 0x7fffff;	// signed ints? set this to max value
+    for (i < tables) {
+        // compute hash
+        // TODO: seeds random 0s? diff lengths?
+        int<<logentries>> idx = hash<<logentries>>(HASH_SEED_1,srcaddr,dstaddr,fidvar_3,fidvar_4);
 
 
+        // init match vars, for each fid entry
+        int<<1>> match_1 = 0;
+        int<<1>> match_2 = 0;
+        int<<1>> match_3 = 0;
+        int<<1>> match_4 = 0;
 
+        // FLOW ID
+        // if not resubmit and matched = 0, check if fid matched
+        if (is_resubmitted==0 && !matched) {
+            match_1 = (int<<1>>) Array.getm(arrs[i]#fid_1,idx,fid_match,srcaddr);
+            match_2 = (int<<1>>) Array.getm(arrs[i]#fid_2,idx,fid_match,dstaddr);
+            match_3 = (int<<1>>) Array.getm(arrs[i]#fid_3,idx,fid_match,fidvar_3);
+            match_4 = (int<<1>>) Array.getm(arrs[i]#fid_4,idx,fid_match,fidvar_4);
+        }
+        // else if resubmit and we're in the right stage, update flow id
+        else if (is_resubmitted==1 && resubmitted_min_stage==(int<<8>>)(size_to_int(i)+1)) {
+            Array.set(arrs[i]#fid_1,idx,srcaddr);
+            Array.set(arrs[i]#fid_2,idx,dstaddr);
+            Array.set(arrs[i]#fid_3,idx,fidvar_3);
+            Array.set(arrs[i]#fid_4,idx,fidvar_4);
+        }
+
+        // check if we matched this array, and update matched
+        int<<1>> match_stg = match_1 & match_2 & match_3 & match_4;
+        // check resources on this, how many does it use?
+        matched = (match_stg==1) || matched; 
+
+
+        // COUNTER
+        int c = 0;
+        // if resubmitted and right stage, incr counter
+        if (is_resubmitted==1 && resubmitted_min_stage==(int<<8>>)(size_to_int(i)+1)) {
+            c = Array.update(arrs[i]#counter,idx,incr,1,incr,1);
+        }
+        else {
+            if (match_stg==1) {	// else if match, incr counter
+                c = Array.update(arrs[i]#counter,idx,incr,1,incr,1);
+            }
+            else {	// else grab counter value
+                c = Array.get(arrs[i]#counter,idx);
+            }
+        }
+
+        // MIN COMP, compute as we go
+        int diff = c - min_val;	// negative --> new min value; pos --> keep min
+        // using dummy reg here to do comparison in stateful ALU
+        // TODO: check resource usage here; do we need 2 dummy regs? we have to keep track of min as we go, so need to update min_val and stg
+        //	if ifstmt uses too many resources (hopefully single bit won't), need another dummy reg bc can't update 2 vars with one reg
+        int<<1>> to_update = (int<<1>>) Array.getm(arrs[i]#dummy_reg,0,get_min,diff);
+        if (to_update==1) {
+            min_val = c;
+            resubmitted_min_stage = (int<<8>>)size_to_int(i) + 1;
+        }
+
+    }
 
     // compute d hashes
     // precision p4 --> hash seed, fid 1, 3w0, fid 2, 3w0, fid 3, fid 4 / hash seed, fid 1, 2w0, fid 2, 2w0, fid 3, 1w0, fid 4
@@ -153,22 +161,22 @@ handle ip_in (int srcaddr, int dstaddr, int<<16>> sport, int<<16>> dport, int<<8
 
     // if no match, probabilistically recirc
     if (is_resubmitted==0 && !matched) {
-		// to do probabilistic recirc, we gen random numbers
-		// if they're w/in some range, then we decide to recirc
-		// entries are predetermined, takes into account min count
-		int entropy_long = Sys.random();
-		int<<12>> entropy_short = (int<<12>>)Sys.random();
+        // to do probabilistic recirc, we gen random numbers
+        // if they're w/in some range, then we decide to recirc
+        // entries are predetermined, takes into account min count
+        int entropy_long = Sys.random();
+        int<<12>> entropy_short = (int<<12>>)Sys.random();
 
-		// either no action or recirc // gen ip_out, or gen new ip_in
-		// if recirc, gen new ip_in event w/ resubmit = 1
-		// generate ip_in(srcaddr, dstaddr, sport, dport, proto, vlan_id, 1, resubmitted_min_stage);
-		// recirc action in p4 --> ig_intr_dprsr_md.resubmit_type = 1;
-		// udpate ingress deparser to check for ^ ??
-		// this table won't change if we're symbolic or not
-		// min_val and entropy_long are ternary matches (for rounding), entropy_short is range
-		// entries are from https://github.com/Princeton-Cabernet/p4-projects/blob/master/PRECISION-tofino/p4src/entries_better_32.p4inc
-		match (min_val, entropy_long, entropy_short) with
-		| _, _, _ -> { generate ip_out(); } // default is to just forward pkt, we're not recirculating
+        // either no action or recirc // gen ip_out, or gen new ip_in
+        // if recirc, gen new ip_in event w/ resubmit = 1
+        // generate ip_in(srcaddr, dstaddr, sport, dport, proto, vlan_id, 1, resubmitted_min_stage);
+        // recirc action in p4 --> ig_intr_dprsr_md.resubmit_type = 1;
+        // udpate ingress deparser to check for ^ ??
+        // this table won't change if we're symbolic or not
+        // min_val and entropy_long are ternary matches (for rounding), entropy_short is range
+        // entries are from https://github.com/Princeton-Cabernet/p4-projects/blob/master/PRECISION-tofino/p4src/entries_better_32.p4inc
+        match (min_val, entropy_long, entropy_short) with
+        | _, _, _ -> { generate ip_out(); } // default is to just forward pkt, we're not recirculating
 
 
 // short ranges
@@ -467,8 +475,8 @@ handle ip_in (int srcaddr, int dstaddr, int<<16>> sport, int<<16>> dport, int<<8
 
     }
     else {
-    	generate ip_out();
-	}
+        generate ip_out();
+    }
 
 }
 
