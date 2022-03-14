@@ -1,0 +1,9 @@
+{
+    "sizes": {
+        "logentries": 7,
+        "tables": 2
+    },
+    "symbolics": {
+        "entries": 128
+    }
+}
