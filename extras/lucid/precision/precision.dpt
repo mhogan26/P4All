@@ -34,10 +34,8 @@ type precisionregs<<'a>> = {
     Array.t<<'a>> fid_2;
     Array.t<<'a>> fid_3;
     Array.t<<'a>> fid_4;
-    Array.t<<'a>> flowcounts;
-    //Array.t<<'a>> counter;
-    Array.t<<'a>> test;
-    //Array.t<<'a>> dummy_reg;
+    Array.t<<'a>> counter;
+    Array.t<<'a>> dummy_reg;
 }
 
 constr precisionregs<<'a>> create_precisionregs(int ent) = {
@@ -45,10 +43,8 @@ constr precisionregs<<'a>> create_precisionregs(int ent) = {
     fid_2 = Array.create(ent);
     fid_3 = Array.create(ent);
     fid_4 = Array.create(ent);
-    flowcounts = Array.create(ent);
-    //counter = Array.create(ent);
-    test = Array.create(1);
-    //dummy_reg = Array.create(1);
+    counter = Array.create(ent);
+    dummy_reg = Array.create(1);
 };
 
 // create symbolic arrays
@@ -72,7 +68,7 @@ memop incr(int memval, int incrval) {
 }
 
 memop get_min(int memval, int diffval) {
-    if (diffval > 0x7fffff) { // negative
+    if (diffval > 0x7fffff) { // negative TODO: UNSIGNED
         return 1;
     } else {
         return 0;
@@ -132,14 +128,14 @@ handle ip_in (int srcaddr, int dstaddr, int<<16>> sport, int<<16>> dport, int<<8
         int c = 0;
         // if resubmitted and right stage, incr counter
         if (is_resubmitted==1 && resubmitted_min_stage==(int<<8>>)(size_to_int(i)+1)) {
-            c = Array.update(arrs[i]#flowcounts,idx,incr,1,incr,1);
+            c = Array.update(arrs[i]#counter,idx,incr,1,incr,1);
         }
         else {
             if (match_stg==1) {	// else if match, incr counter
-                c = Array.update(arrs[i]#flowcounts,idx,incr,1,incr,1);
+                c = Array.update(arrs[i]#counter,idx,incr,1,incr,1);
             }
             else {	// else grab counter value
-                c = Array.get(arrs[i]#flowcounts,idx);
+                c = Array.get(arrs[i]#counter,idx);
             }
         }
 
@@ -149,7 +145,7 @@ handle ip_in (int srcaddr, int dstaddr, int<<16>> sport, int<<16>> dport, int<<8
         // using dummy reg here to do comparison in stateful ALU
         // TODO: check resource usage here; do we need 2 dummy regs? we have to keep track of min as we go, so need to update min_val and stg
         //	if ifstmt uses too many resources (hopefully single bit won't), need another dummy reg bc can't update 2 vars with one reg
-        int<<1>> to_update = (int<<1>>) Array.getm(arrs[i]#test,0,get_min,diff);
+        int<<1>> to_update = (int<<1>>) Array.getm(arrs[i]#dummy_reg,0,get_min,diff);
         if (to_update==1) {
             min_val = c;
             resubmitted_min_stage = (int<<8>>)size_to_int(i) + 1;
