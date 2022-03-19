@@ -89,7 +89,7 @@ handle ip_in (int key, int<<3>> resubmit, int<<8>> resubmitted_min_stage, int ca
         // compute hash
         // TODO: seeds random 0s? diff lengths?
         // adding 2 to avoid identity hash (1) and 0
-        int<<logentries>> idx = hash<<logentries>>(Sys.random()+2,key);
+        int<<logentries>> idx = hash<<logentries>>(size_to_int(i)+2,key);
 
 
         // init match vars, for each fid entry
