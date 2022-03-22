@@ -1,0 +1,203 @@
+/* cms-based caching module in lucid */
+
+// hard coding this to be 32 bit width registers, bc externs won't let us do int<<'a>>
+
+
+/* SYMBOLIC V2, sizes AND num of tables symbolic */
+
+// TODO: POLYS/SEEDS, DUMMY REGS - MORE THAN 1?
+// TODO: INTS ARE UNSIGNED
+
+
+/* record for symbolic arrays that are interleaved in loop */
+// we have to break up flow id bc we don't get long enough regs in tofino
+// dummy array to compute min/compare 2 32-bit numbers (size is 32w32 in precision p4 code)
+// precision p4 code has 32 entries, but we don't need more than 1?
+type regs = {
+    Array.t<<32>> keys;
+    Array.t<<32>> counter;
+    Array.t<<32>> values;
+    Array.t<<32>> dummy_reg;
+}
+
+constr regs create_regs(int ent) = {
+    keys = Array.create(ent);
+    counter = Array.create(ent);
+    values = Array.create(ent);
+    dummy_reg = Array.create(1);
+};
+
+/* Memops */
+memop key_match(int memval, int newval) {
+    if (memval == newval) { return 1; }
+    else { return 0; }
+}
+
+memop incr(int memval, int incrval) {
+    return memval+incrval;
+}
+
+memop compute_min(int memval, int minval) {
+    if (memval + 1 < minval) {
+        return memval+1;
+    } else {
+        return minval;
+    }
+}
+
+memop get_min(int memval, int diffval) {
+    if (diffval > 0x7fffff) { // negative TODO: UNSIGNED
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
+/* externs */
+extern log_miss(int key);
+extern log_hit(int key);
+
+module Cmscache : {
+    global type t<<'logent, 'tab, 'logcols, 'rows>>;
+    constr t<<'logent, 'tab, 'logcols, 'rows>> create(int ent, int cols);
+
+    fun int<<8>> cache (t<<'logent, 'tab, 'logcols, 'rows>> ca, int key, int<<3>> resubmit, int<<8>> resubmitted_min_stage, int cacheval) [start <= ca; end ca];
+   
+} {
+
+    type t<<'logent, 'tab, 'logcols, 'rows>> = {
+        regs['tab] arrs;
+        int<<'logent>> dummy_var;
+        Array.t<<32>>['rows] cms;
+        int<<'logcols>> dummy_var2;
+    }
+
+    constr t<<'logent, 'tab, 'logcols, 'rows>> create(int ent, int cols) = {
+        arrs = [create_regs(ent) for i<'tab];
+        dummy_var = 0;
+        cms = [Array.create(cols) for i<'rows];
+        dummy_var2 = 0;
+    };
+
+
+    fun int<<8>> cache (t<<'logent, 'tab, 'logcols, 'rows>> ca, int key, int<<3>> resubmit, int<<8>> resubmitted_min_stage, int cacheval) {
+        int<<1>> is_resubmitted = (int<<1>>) resubmit;     
+
+        // add matched var that we set to 1 if match anywhere, then we can skip the work for rest of arrays
+        bool matched = false;
+        // min var to keep track of which entry we should replace if we recirc
+        int min_val = 0x7fffff; // signed ints? set this to max value
+
+        for (i < 'tab) {
+            // compute hash
+            // TODO: seeds random 0s? diff lengths?
+            int<<'logent>> idx = hash<<'logent>>(size_to_int(i)+3,key);
+
+            // init match vars, for each fid entry
+            int<<1>> match_1 = 0;
+
+            // KEY
+            // if not resubmit and matched = 0, check if key matched
+            if (is_resubmitted==0 && !matched) {
+                match_1 = (int<<1>>) Array.getm(ca#arrs[i]#keys,idx,key_match,key);
+            }
+            // else if resubmit and we're in the right stage, update key
+            else if (is_resubmitted==1 && resubmitted_min_stage==(int<<8>>)(size_to_int(i)+1)) {
+                Array.set(ca#arrs[i]#keys,idx,key);
+            }
+
+            // check if we matched this array, and update matched
+            // check resources on this, how many does it use?
+            matched = (match_1==1) || matched;
+
+            // COUNTER + VALUE
+            int c = 0;
+            // if resubmitted and right stage, incr counter and update cached value
+            if (is_resubmitted==1 && resubmitted_min_stage==(int<<8>>)(size_to_int(i)+1)) {
+                c = Array.update(ca#arrs[i]#counter,idx,incr,1,incr,1);
+                Array.set(ca#arrs[i]#values,idx,cacheval);
+            }
+            else {
+                if (match_1==1) {   // else if match, incr counter
+                    c = Array.update(ca#arrs[i]#counter,idx,incr,1,incr,1);
+                    // cache hit, log it
+                    log_hit(key);
+                }
+                else {  // else grab counter value
+                    c = Array.get(ca#arrs[i]#counter,idx);
+                }
+            }
+
+
+           // MIN COMP, compute as we go
+            int diff = c - min_val; // negative --> new min value; pos --> keep min
+            // using dummy reg here to do comparison in stateful ALU
+            // TODO: check resource usage here; do we need 2 dummy regs? we have to keep track of min as we go, so need to update min_val and stg
+            //  if ifstmt uses too many resources (hopefully single bit won't), need another dummy reg bc can't update 2 vars with one reg
+            int<<1>> to_update = (int<<1>>) Array.getm(ca#arrs[i]#dummy_reg,0,get_min,diff);
+            if (to_update==1) {
+                min_val = c;
+                resubmitted_min_stage = (int<<8>>)size_to_int(i) + 1;
+            }
+
+
+        }
+
+        /* cms */
+        if (is_resubmitted==0 && !matched) {
+            // cache miss, log it
+            log_miss(key);
+            int min = 0x7fffff;
+            for (i < 'rows) {
+                int<<'logcols>> idx = hash<<'logcols>>(size_to_int(i)+2,key);
+                // incr counter
+                min = Array.update(ca#cms[i], idx, compute_min, min, incr, 1);
+            }
+
+            // if cms count > thresh, let's insert
+            // use MAT to decide if we're inserting
+            // testing 63 as threshold for skewed
+            // testing 80 as threshold for not skewed
+            match (min, min_val) with
+            | _, 0 -> { return resubmitted_min_stage; } // cache slot was empty
+            //| 0b00000000000000000000000000******,_ -> { return 0; } // below the threshold, so don't insert
+            //| 0b00000000000000000000000000000***,_ -> { return 0; } // below the threshold, so don't insert
+            | 0b00000000000000000000000000******,_ -> { return 0; } // below the threshold, so don't insert
+            | 0b0000000000000000000000000100****,_ -> { return 0; } // below the threshold, so don't insert
+            | 0b00000000000000000000000001010000,_ -> { return 0; } // below the threshold, so don't insert
+            | _,_ -> { return resubmitted_min_stage; }
+ 
+        }
+        else { return 0; }  // not adding to cache, forward pkt
+
+    }
+
+}
+
+/* symbolics */
+symbolic int entries;
+symbolic size logentries;
+symbolic size tables;
+symbolic int cols;
+symbolic size logcols;
+symbolic size rows;
+
+global Cmscache.t<<logentries, tables, logcols, rows>> pc = Cmscache.create(entries,cols);
+//global Cmscache.t<<7, 2, 7, 2>> pc = Precisioncache.create(128,128);
+
+entry event ip_in(int key, int<<3>> resubmit, int<<8>> resubmitted_min_stage, int cacheval);
+exit event ip_out();
+
+handle ip_in(int key, int<<3>> resubmit, int<<8>> resubmitted_min_stage, int cacheval) {
+    resubmitted_min_stage = Cmscache.cache(pc,key,resubmit,resubmitted_min_stage,cacheval);
+    if (resubmitted_min_stage == 0) {
+        generate ip_out();
+    }
+    else {
+        generate ip_in(key, 1, resubmitted_min_stage, key);
+    }
+}
+
+
+
+

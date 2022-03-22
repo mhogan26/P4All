@@ -1,0 +1,1354 @@
+/* precision-based caching module in lucid */
+// basic algo:
+// d hash functions (tables)
+// for each hash table, compute index
+// if key at index matches current packet, increment stored value
+// else, if the stored value is less than the current min, updated min (and stage number)
+// if key does not match any of the d tables, probabilistically insert in cache
+// if inserting, updated value stored at array in min_stage
+// prob insertion uses table w/ predetermined entries
+
+// hard coding this to be 32 bit width registers, bc externs won't let us do int<<'a>>
+
+
+/* SYMBOLIC V2, sizes AND num of tables symbolic */
+
+// TODO: POLYS/SEEDS, DUMMY REGS - MORE THAN 1?
+// TODO: INTS ARE UNSIGNED
+
+
+/* consts */
+// polys for hash func (from precision p4 code)
+// CAN WE HAVE 16 BIT HASH POLYNOMIALS IN LUCID
+const int<<16>> poly1 = 32773;
+const int<<16>> poly2 = 15717;
+// no clue why these need to be different widths for each hash call
+const int<<3>> HASH_SEED_1 = 2;
+const int<<5>> HASH_SEED_2 = 17;
+
+/* record for symbolic arrays that are interleaved in loop */
+// we have to break up flow id bc we don't get long enough regs in tofino
+// dummy array to compute min/compare 2 32-bit numbers (size is 32w32 in precision p4 code)
+// precision p4 code has 32 entries, but we don't need more than 1?
+type regs = {
+    Array.t<<32>> keys;
+    Array.t<<32>> counter;
+    Array.t<<32>> values;
+    Array.t<<32>> dummy_reg;
+}
+
+constr regs create_regs(int ent) = {
+    keys = Array.create(ent);
+    counter = Array.create(ent);
+    values = Array.create(ent);
+    dummy_reg = Array.create(1);
+};
+
+/* Memops */
+memop key_match(int memval, int newval) {
+    if (memval == newval) { return 1; }
+    else { return 0; }
+}
+
+memop incr(int memval, int incrval) {
+    return memval+incrval;
+}
+
+memop get_min(int memval, int diffval) {
+    if (diffval > 0x7fffff) { // negative TODO: UNSIGNED
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
+/* externs */
+extern log_miss(int key);
+extern log_hit(int key);
+
+module Precisioncache : {
+    global type t<<'logent, 'tab>>;
+    constr t<<'logent, 'tab>> create(int ent);
+
+    fun int<<8>> cache (t<<'logent, 'tab>> ca, int key, int<<3>> resubmit, int<<8>> resubmitted_min_stage, int cacheval) [start <= ca; end ca];
+   
+} {
+
+    type t<<'logent, 'tab>> = {
+        regs['tab] arrs;
+        int<<'logent>> dummy_var;
+    }
+
+    constr t<<'logent, 'tab>> create(int ent) = {
+        arrs = [create_regs(ent) for i<'tab];
+        dummy_var = 0;
+    };
+
+
+    fun int<<8>> cache (t<<'logent, 'tab>> ca, int key, int<<3>> resubmit, int<<8>> resubmitted_min_stage, int cacheval) {
+        int<<1>> is_resubmitted = (int<<1>>) resubmit;     
+
+        // add matched var that we set to 1 if match anywhere, then we can skip the work for rest of arrays
+        bool matched = false;
+        // min var to keep track of which entry we should replace if we recirc
+        int min_val = 0x7fffff; // signed ints? set this to max value
+
+        for (i < 'tab) {
+            // compute hash
+            // TODO: seeds random 0s? diff lengths?
+            int<<'logent>> idx = hash<<'logent>>(size_to_int(i)+2,key);
+
+            // init match vars, for each fid entry
+            int<<1>> match_1 = 0;
+
+            // KEY
+            // if not resubmit and matched = 0, check if key matched
+            if (is_resubmitted==0 && !matched) {
+                match_1 = (int<<1>>) Array.getm(ca#arrs[i]#keys,idx,key_match,key);
+            }
+            // else if resubmit and we're in the right stage, update key
+            else if (is_resubmitted==1 && resubmitted_min_stage==(int<<8>>)(size_to_int(i)+1)) {
+                Array.set(ca#arrs[i]#keys,idx,key);
+            }
+
+            // check if we matched this array, and update matched
+            // check resources on this, how many does it use?
+            matched = (match_1==1) || matched;
+
+            // COUNTER + VALUE
+            int c = 0;
+            // if resubmitted and right stage, incr counter and update cached value
+            if (is_resubmitted==1 && resubmitted_min_stage==(int<<8>>)(size_to_int(i)+1)) {
+                c = Array.update(ca#arrs[i]#counter,idx,incr,1,incr,1);
+                Array.set(ca#arrs[i]#values,idx,cacheval);
+            }
+            else {
+                if (match_1==1) {   // else if match, incr counter
+                    c = Array.update(ca#arrs[i]#counter,idx,incr,1,incr,1);
+                    // cache hit, log it
+                    //log_hit(key);
+                }
+                else {  // else grab counter value
+                    c = Array.get(ca#arrs[i]#counter,idx);
+                }
+            }
+
+
+           // MIN COMP, compute as we go
+            int diff = c - min_val; // negative --> new min value; pos --> keep min
+            // using dummy reg here to do comparison in stateful ALU
+            // TODO: check resource usage here; do we need 2 dummy regs? we have to keep track of min as we go, so need to update min_val and stg
+            //  if ifstmt uses too many resources (hopefully single bit won't), need another dummy reg bc can't update 2 vars with one reg
+            int<<1>> to_update = (int<<1>>) Array.getm(ca#arrs[i]#dummy_reg,0,get_min,diff);
+            if (to_update==1) {
+                min_val = c;
+                resubmitted_min_stage = (int<<8>>)size_to_int(i) + 1;
+            }
+
+
+        }
+        // if no match, probabilistically recirc
+        if (is_resubmitted==0 && !matched) {
+            // cache miss, log it
+            log_miss(key);
+
+            // to do probabilistic recirc, we gen random numbers
+            // if they're w/in some range, then we decide to recirc
+            // entries are predetermined, takes into account min count
+            int entropy_long = Sys.random();
+            int<<12>> entropy_short = (int<<12>>)Sys.random();
+
+            // either no action or recirc // gen ip_out, or gen new ip_in
+            // if recirc, gen new ip_in event w/ resubmit = 1
+            // pass in key as dummy value
+            // generate ip_in(key, 1, resubmitted_min_stage,key);
+            // recirc action in p4 --> ig_intr_dprsr_md.resubmit_type = 1;
+            // udpate ingress deparser to check for ^ ??
+            // this table won't change if we're symbolic or not
+            // min_val and entropy_long are ternary matches (for rounding), entropy_short is range
+            // entries are from https://github.com/Princeton-Cabernet/p4-projects/blob/master/PRECISION-tofino/p4src/entries_better_32.p4inc
+
+            match (min_val, entropy_long, entropy_short) with
+            //(32w0x0 &&& 32w0xffffffff, 32w0 &&& 32w0, 12w0..12w4095 )
+            | 0b00000000000000000000000000000000, 0b********************************, 0b************ -> { return resubmitted_min_stage; }
+            //(32w0x1 &&& 32w0xffffffff, 32w0 &&& 32w0, 12w0..12w2047 )
+            | 0b00000000000000000000000000000001, 0b********************************, 0b0*********** -> { return resubmitted_min_stage; }
+            //(32w0x2 &&& 32w0xffffffff, 32w0 &&& 32w0, 12w0..12w1364 )
+            | 0b00000000000000000000000000000010, 0b********************************, 0b00********** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000000010, 0b********************************, 0b0100******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000000010, 0b********************************, 0b010100****** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000000010, 0b********************************, 0b01010100**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000000010, 0b********************************, 0b0101010100** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000000010, 0b********************************, 0b010101010100 -> { return resubmitted_min_stage; }
+            //(32w0x3 &&& 32w0xffffffff, 32w0 &&& 32w0, 12w0..12w1023 )
+            | 0b00000000000000000000000000000011, 0b********************************, 0b00********** -> { return resubmitted_min_stage; }
+            //(32w0x4 &&& 32w0xffffffff, 32w0 &&& 32w0, 12w0..12w818 )
+            | 0b00000000000000000000000000000100, 0b********************************, 0b000********* -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000000100, 0b********************************, 0b0010******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000000100, 0b********************************, 0b0011000***** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000000100, 0b********************************, 0b00110010**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000000100, 0b********************************, 0b00110011000* -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000000100, 0b********************************, 0b001100110010 -> { return resubmitted_min_stage; }
+            //(32w0x5 &&& 32w0xffffffff, 32w0 &&& 32w0, 12w0..12w681 ) 
+            | 0b00000000000000000000000000000101, 0b********************************, 0b000********* -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000000101, 0b********************************, 0b00100******* -> { return resubmitted_min_stage; } 
+            | 0b00000000000000000000000000000101, 0b********************************, 0b0010100***** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000000101, 0b********************************, 0b001010100*** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000000101, 0b********************************, 0b00101010100* -> { return resubmitted_min_stage; }
+            //(32w0x6 &&& 32w0xffffffff, 32w0 &&& 32w0, 12w0..12w584 )
+            | 0b00000000000000000000000000000110, 0b********************************, 0b000********* -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000000110, 0b********************************, 0b001000****** -> { return resubmitted_min_stage; } 
+            | 0b00000000000000000000000000000110, 0b********************************, 0b001001000*** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000000110, 0b********************************, 0b00101010100* -> { return resubmitted_min_stage; }
+            //(32w0x7 &&& 32w0xffffffff, 32w0 &&& 32w0, 12w0..12w511 )
+            | 0b00000000000000000000000000000111, 0b********************************, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x8 &&& 32w0xffffffff, 32w0 &&& 32w0, 12w0..12w454 )
+            | 0b00000000000000000000000000001000, 0b********************************, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001000, 0b********************************, 0b00010******* -> { return resubmitted_min_stage; } 
+            | 0b00000000000000000000000000001000, 0b********************************, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001000, 0b********************************, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001000, 0b********************************, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001000, 0b********************************, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x9 &&& 32w0xffffffff, 32w0 &&& 32w0, 12w0..12w408 )
+            | 0b00000000000000000000000000001001, 0b********************************, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001001, 0b********************************, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001001, 0b********************************, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001001, 0b********************************, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001001, 0b********************************, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0xa &&& 32w0xffffffff, 32w0 &&& 32w0, 12w0..12w371 )
+            | 0b00000000000000000000000000001010, 0b********************************, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001010, 0b********************************, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001010, 0b********************************, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001010, 0b********************************, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001010, 0b********************************, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0xb &&& 32w0xffffffff, 32w0 &&& 32w0, 12w0..12w340 )
+            | 0b00000000000000000000000000001011, 0b********************************, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001011, 0b********************************, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001011, 0b********************************, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001011, 0b********************************, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001011, 0b********************************, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0xc &&& 32w0xffffffff, 32w0 &&& 32w0, 12w0..12w314 )
+            | 0b00000000000000000000000000001100, 0b********************************, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001100, 0b********************************, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001100, 0b********************************, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001100, 0b********************************, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001100, 0b********************************, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001100, 0b********************************, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0xd &&& 32w0xffffffff, 32w0 &&& 32w0, 12w0..12w291 )
+            | 0b00000000000000000000000000001101, 0b********************************, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001101, 0b********************************, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001101, 0b********************************, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0xe &&& 32w0xffffffff, 32w0 &&& 32w0, 12w0..12w272 )
+            | 0b00000000000000000000000000001110, 0b********************************, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001110, 0b********************************, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000000000001110, 0b********************************, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0xf &&& 32w0xffffffff, 32w0 &&& 32w0, 12w0..12w255 )
+            | 0b00000000000000000000000000001111, 0b********************************, 0b0000******** -> { return resubmitted_min_stage; }
+            //(32w0x10 &&& 32w0xfffffffe, 32w0 &&& 32w0x1, 12w0..12w511 )
+            | 0b0000000000000000000000000001000*, 0b*******************************0, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x12 &&& 32w0xfffffffe, 32w0 &&& 32w0x1, 12w0..12w454 ) 
+            | 0b0000000000000000000000000001001*, 0b*******************************0, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001001*, 0b*******************************0, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001001*, 0b*******************************0, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001001*, 0b*******************************0, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001001*, 0b*******************************0, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001001*, 0b*******************************0, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x14 &&& 32w0xfffffffe, 32w0 &&& 32w0x1, 12w0..12w408 )
+            | 0b0000000000000000000000000001010*, 0b*******************************0, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001010*, 0b*******************************0, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001010*, 0b*******************************0, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001010*, 0b*******************************0, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001010*, 0b*******************************0, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x16 &&& 32w0xfffffffe, 32w0 &&& 32w0x1, 12w0..12w371 )
+            | 0b0000000000000000000000000001011*, 0b*******************************0, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001011*, 0b*******************************0, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001011*, 0b*******************************0, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001011*, 0b*******************************0, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001011*, 0b*******************************0, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x18 &&& 32w0xfffffffe, 32w0 &&& 32w0x1, 12w0..12w340 )
+            | 0b0000000000000000000000000001100*, 0b*******************************0, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001100*, 0b*******************************0, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001100*, 0b*******************************0, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001100*, 0b*******************************0, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001100*, 0b*******************************0, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x1a &&& 32w0xfffffffe, 32w0 &&& 32w0x1, 12w0..12w314 )
+            | 0b0000000000000000000000000001101*, 0b*******************************0, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001101*, 0b*******************************0, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001101*, 0b*******************************0, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001101*, 0b*******************************0, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001101*, 0b*******************************0, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001101*, 0b*******************************0, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x1c &&& 32w0xfffffffe, 32w0 &&& 32w0x1, 12w0..12w291 )
+            | 0b0000000000000000000000000001110*, 0b*******************************0, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001110*, 0b*******************************0, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001110*, 0b*******************************0, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x1e &&& 32w0xfffffffe, 32w0 &&& 32w0x1, 12w0..12w272 )
+            | 0b0000000000000000000000000001111*, 0b*******************************0, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000000001111*, 0b*******************************0, 0b00010000**** -> { return resubmitted_min_stage; }
+            //(32w0xb0 &&& 32w0xfffffff0, 32w0 &&& 32w0xf, 12w0..12w371 ) 
+            | 0b0000000000000000000000001011****, 0b****************************0000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000001011****, 0b****************************0000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000001011****, 0b****************************0000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000001011****, 0b****************************0000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000001011****, 0b****************************0000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0xc0 &&& 32w0xfffffff0, 32w0 &&& 32w0xf, 12w0..12w340 ) 
+            | 0b0000000000000000000000001100****, 0b****************************0000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000001100****, 0b****************************0000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000001100****, 0b****************************0000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000001100****, 0b****************************0000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000001100****, 0b****************************0000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0xd0 &&& 32w0xfffffff0, 32w0 &&& 32w0xf, 12w0..12w314 ) 
+            | 0b0000000000000000000000001101****, 0b****************************0000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000001101****, 0b****************************0000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000001101****, 0b****************************0000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000001101****, 0b****************************0000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000001101****, 0b****************************0000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000001101****, 0b****************************0000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0xe0 &&& 32w0xfffffff0, 32w0 &&& 32w0xf, 12w0..12w291 ) 
+            | 0b0000000000000000000000001110****, 0b****************************0000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000001110****, 0b****************************0000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000001110****, 0b****************************0000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0xf0 &&& 32w0xfffffff0, 32w0 &&& 32w0xf, 12w0..12w272 ) 
+            | 0b0000000000000000000000001111****, 0b****************************0000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000001111****, 0b****************************0000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000000001111****, 0b****************************0000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x100 &&& 32w0xffffffe0, 32w0 &&& 32w0x1f, 12w0..12w511 ) 
+            | 0b000000000000000000000001000*****, 0b***************************00000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x120 &&& 32w0xffffffe0, 32w0 &&& 32w0x1f, 12w0..12w454 ) 
+            | 0b000000000000000000000001001*****, 0b***************************00000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001001*****, 0b***************************00000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001001*****, 0b***************************00000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001001*****, 0b***************************00000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001001*****, 0b***************************00000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001001*****, 0b***************************00000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x140 &&& 32w0xffffffe0, 32w0 &&& 32w0x1f, 12w0..12w408 ) 
+            | 0b000000000000000000000001010*****, 0b***************************00000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001010*****, 0b***************************00000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001010*****, 0b***************************00000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001010*****, 0b***************************00000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001010*****, 0b***************************00000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x160 &&& 32w0xffffffe0, 32w0 &&& 32w0x1f, 12w0..12w371 ) 
+            | 0b000000000000000000000001011*****, 0b***************************00000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001011*****, 0b***************************00000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001011*****, 0b***************************00000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001011*****, 0b***************************00000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001011*****, 0b***************************00000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x180 &&& 32w0xffffffe0, 32w0 &&& 32w0x1f, 12w0..12w340 ) 
+            | 0b000000000000000000000001100*****, 0b***************************00000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001100*****, 0b***************************00000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001100*****, 0b***************************00000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001100*****, 0b***************************00000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001100*****, 0b***************************00000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x1a0 &&& 32w0xffffffe0, 32w0 &&& 32w0x1f, 12w0..12w314 ) 
+            | 0b000000000000000000000001101*****, 0b***************************00000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001101*****, 0b***************************00000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001101*****, 0b***************************00000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001101*****, 0b***************************00000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001101*****, 0b***************************00000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001101*****, 0b***************************00000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x1c0 &&& 32w0xffffffe0, 32w0 &&& 32w0x1f, 12w0..12w291 ) 
+            | 0b000000000000000000000001110*****, 0b***************************00000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001110*****, 0b***************************00000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001110*****, 0b***************************00000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x1e0 &&& 32w0xffffffe0, 32w0 &&& 32w0x1f, 12w0..12w272 ) 
+            | 0b000000000000000000000001111*****, 0b***************************00000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001111*****, 0b***************************00000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000000001111*****, 0b***************************00000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x200 &&& 32w0xffffffc0, 32w0 &&& 32w0x3f, 12w0..12w511 ) 
+            | 0b00000000000000000000001000******, 0b**************************000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x240 &&& 32w0xffffffc0, 32w0 &&& 32w0x3f, 12w0..12w454 ) 
+            | 0b00000000000000000000001001******, 0b**************************000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001001******, 0b**************************000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001001******, 0b**************************000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001001******, 0b**************************000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001001******, 0b**************************000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001001******, 0b**************************000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x280 &&& 32w0xffffffc0, 32w0 &&& 32w0x3f, 12w0..12w408 ) 
+            | 0b00000000000000000000001010******, 0b**************************000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001010******, 0b**************************000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001010******, 0b**************************000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001010******, 0b**************************000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001010******, 0b**************************000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x2c0 &&& 32w0xffffffc0, 32w0 &&& 32w0x3f, 12w0..12w371 ) 
+            | 0b00000000000000000000001011******, 0b**************************000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001011******, 0b**************************000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001011******, 0b**************************000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001011******, 0b**************************000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001011******, 0b**************************000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x300 &&& 32w0xffffffc0, 32w0 &&& 32w0x3f, 12w0..12w340 ) 
+            | 0b00000000000000000000001100******, 0b**************************000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001100******, 0b**************************000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001100******, 0b**************************000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001100******, 0b**************************000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001100******, 0b**************************000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x340 &&& 32w0xffffffc0, 32w0 &&& 32w0x3f, 12w0..12w314 ) 
+            | 0b00000000000000000000001101******, 0b**************************000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001101******, 0b**************************000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001101******, 0b**************************000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001101******, 0b**************************000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001101******, 0b**************************000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001101******, 0b**************************000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x380 &&& 32w0xffffffc0, 32w0 &&& 32w0x3f, 12w0..12w291 ) 
+            | 0b00000000000000000000001110******, 0b**************************000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001110******, 0b**************************000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001110******, 0b**************************000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x3c0 &&& 32w0xffffffc0, 32w0 &&& 32w0x3f, 12w0..12w272 ) 
+            | 0b00000000000000000000001111******, 0b**************************000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001111******, 0b**************************000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000000001111******, 0b**************************000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x400 &&& 32w0xffffff80, 32w0 &&& 32w0x7f, 12w0..12w511 ) 
+            | 0b0000000000000000000001000*******, 0b*************************0000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x480 &&& 32w0xffffff80, 32w0 &&& 32w0x7f, 12w0..12w454 ) 
+            | 0b0000000000000000000001001*******, 0b*************************0000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001001*******, 0b*************************0000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001001*******, 0b*************************0000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001001*******, 0b*************************0000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001001*******, 0b*************************0000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001001*******, 0b*************************0000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x500 &&& 32w0xffffff80, 32w0 &&& 32w0x7f, 12w0..12w408 ) 
+            | 0b0000000000000000000001010*******, 0b*************************0000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001010*******, 0b*************************0000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001010*******, 0b*************************0000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001010*******, 0b*************************0000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001010*******, 0b*************************0000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x580 &&& 32w0xffffff80, 32w0 &&& 32w0x7f, 12w0..12w371 ) 
+            | 0b0000000000000000000001011*******, 0b*************************0000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001011*******, 0b*************************0000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001011*******, 0b*************************0000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001011*******, 0b*************************0000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001011*******, 0b*************************0000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x600 &&& 32w0xffffff80, 32w0 &&& 32w0x7f, 12w0..12w340 ) 
+            | 0b0000000000000000000001100*******, 0b*************************0000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001100*******, 0b*************************0000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001100*******, 0b*************************0000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001100*******, 0b*************************0000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001100*******, 0b*************************0000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x680 &&& 32w0xffffff80, 32w0 &&& 32w0x7f, 12w0..12w314 ) 
+            | 0b0000000000000000000001101*******, 0b*************************0000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001101*******, 0b*************************0000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001101*******, 0b*************************0000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001101*******, 0b*************************0000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001101*******, 0b*************************0000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001101*******, 0b*************************0000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x700 &&& 32w0xffffff80, 32w0 &&& 32w0x7f, 12w0..12w291 ) 
+            | 0b0000000000000000000001110*******, 0b*************************0000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001110*******, 0b*************************0000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001110*******, 0b*************************0000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x780 &&& 32w0xffffff80, 32w0 &&& 32w0x7f, 12w0..12w272 ) 
+            | 0b0000000000000000000001111*******, 0b*************************0000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001111*******, 0b*************************0000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000000001111*******, 0b*************************0000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x800 &&& 32w0xffffff00, 32w0 &&& 32w0xff, 12w0..12w511 ) 
+            | 0b000000000000000000001000********, 0b************************00000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x900 &&& 32w0xffffff00, 32w0 &&& 32w0xff, 12w0..12w454 ) 
+            | 0b000000000000000000001001********, 0b************************00000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001001********, 0b************************00000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001001********, 0b************************00000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001001********, 0b************************00000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001001********, 0b************************00000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001001********, 0b************************00000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0xa00 &&& 32w0xffffff00, 32w0 &&& 32w0xff, 12w0..12w408 ) 
+            | 0b000000000000000000001010********, 0b************************00000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001010********, 0b************************00000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001010********, 0b************************00000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001010********, 0b************************00000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001010********, 0b************************00000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0xb00 &&& 32w0xffffff00, 32w0 &&& 32w0xff, 12w0..12w371 ) 
+            | 0b000000000000000000001011********, 0b************************00000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001011********, 0b************************00000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001011********, 0b************************00000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001011********, 0b************************00000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001011********, 0b************************00000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0xc00 &&& 32w0xffffff00, 32w0 &&& 32w0xff, 12w0..12w340 ) 
+            | 0b000000000000000000001100********, 0b************************00000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001100********, 0b************************00000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001100********, 0b************************00000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001100********, 0b************************00000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001100********, 0b************************00000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0xd00 &&& 32w0xffffff00, 32w0 &&& 32w0xff, 12w0..12w314 ) 
+            | 0b000000000000000000001101********, 0b************************00000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001101********, 0b************************00000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001101********, 0b************************00000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001101********, 0b************************00000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001101********, 0b************************00000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001101********, 0b************************00000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0xe00 &&& 32w0xffffff00, 32w0 &&& 32w0xff, 12w0..12w291 ) 
+            | 0b000000000000000000001110********, 0b************************00000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001110********, 0b************************00000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001110********, 0b************************00000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0xf00 &&& 32w0xffffff00, 32w0 &&& 32w0xff, 12w0..12w272 ) 
+            | 0b000000000000000000001111********, 0b************************00000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001111********, 0b************************00000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b000000000000000000001111********, 0b************************00000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x1000 &&& 32w0xfffffe00, 32w0 &&& 32w0x1ff, 12w0..12w511 ) 
+            | 0b00000000000000000001000*********, 0b***********************000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x1200 &&& 32w0xfffffe00, 32w0 &&& 32w0x1ff, 12w0..12w454 ) 
+            | 0b00000000000000000001001*********, 0b***********************000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001001*********, 0b***********************000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001001*********, 0b***********************000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001001*********, 0b***********************000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001001*********, 0b***********************000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001001*********, 0b***********************000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x1400 &&& 32w0xfffffe00, 32w0 &&& 32w0x1ff, 12w0..12w408 ) 
+            | 0b00000000000000000001010*********, 0b***********************000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001010*********, 0b***********************000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001010*********, 0b***********************000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001010*********, 0b***********************000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001010*********, 0b***********************000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x1600 &&& 32w0xfffffe00, 32w0 &&& 32w0x1ff, 12w0..12w371 ) 
+            | 0b00000000000000000001011*********, 0b***********************000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001011*********, 0b***********************000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001011*********, 0b***********************000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001011*********, 0b***********************000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001011*********, 0b***********************000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x1800 &&& 32w0xfffffe00, 32w0 &&& 32w0x1ff, 12w0..12w340 ) 
+            | 0b00000000000000000001100*********, 0b***********************000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001100*********, 0b***********************000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001100*********, 0b***********************000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001100*********, 0b***********************000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001100*********, 0b***********************000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x1a00 &&& 32w0xfffffe00, 32w0 &&& 32w0x1ff, 12w0..12w314 ) 
+            | 0b00000000000000000001101*********, 0b***********************000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001101*********, 0b***********************000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001101*********, 0b***********************000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001101*********, 0b***********************000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001101*********, 0b***********************000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001101*********, 0b***********************000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x1c00 &&& 32w0xfffffe00, 32w0 &&& 32w0x1ff, 12w0..12w291 ) 
+            | 0b00000000000000000001110*********, 0b***********************000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001110*********, 0b***********************000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001110*********, 0b***********************000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x1e00 &&& 32w0xfffffe00, 32w0 &&& 32w0x1ff, 12w0..12w272 ) 
+            | 0b00000000000000000001111*********, 0b***********************000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001111*********, 0b***********************000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000000001111*********, 0b***********************000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x2000 &&& 32w0xfffffc00, 32w0 &&& 32w0x3ff, 12w0..12w511 ) 
+            | 0b0000000000000000001000**********, 0b**********************0000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x2400 &&& 32w0xfffffc00, 32w0 &&& 32w0x3ff, 12w0..12w454 ) 
+            | 0b0000000000000000001001**********, 0b**********************0000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001001**********, 0b**********************0000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001001**********, 0b**********************0000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001001**********, 0b**********************0000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001001**********, 0b**********************0000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001001**********, 0b**********************0000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x2800 &&& 32w0xfffffc00, 32w0 &&& 32w0x3ff, 12w0..12w408 ) 
+            | 0b0000000000000000001010**********, 0b**********************0000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001010**********, 0b**********************0000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001010**********, 0b**********************0000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001010**********, 0b**********************0000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001010**********, 0b**********************0000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x2c00 &&& 32w0xfffffc00, 32w0 &&& 32w0x3ff, 12w0..12w371 ) 
+            | 0b0000000000000000001011**********, 0b**********************0000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001011**********, 0b**********************0000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001011**********, 0b**********************0000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001011**********, 0b**********************0000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001011**********, 0b**********************0000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x3000 &&& 32w0xfffffc00, 32w0 &&& 32w0x3ff, 12w0..12w340 ) 
+            | 0b0000000000000000001100**********, 0b**********************0000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001100**********, 0b**********************0000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001100**********, 0b**********************0000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001100**********, 0b**********************0000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001100**********, 0b**********************0000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x3400 &&& 32w0xfffffc00, 32w0 &&& 32w0x3ff, 12w0..12w314 ) 
+            | 0b0000000000000000001101**********, 0b**********************0000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001101**********, 0b**********************0000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001101**********, 0b**********************0000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001101**********, 0b**********************0000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001101**********, 0b**********************0000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001101**********, 0b**********************0000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x3800 &&& 32w0xfffffc00, 32w0 &&& 32w0x3ff, 12w0..12w291 ) 
+            | 0b0000000000000000001110**********, 0b**********************0000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001110**********, 0b**********************0000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001110**********, 0b**********************0000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x3c00 &&& 32w0xfffffc00, 32w0 &&& 32w0x3ff, 12w0..12w272 ) 
+            | 0b0000000000000000001111**********, 0b**********************0000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001111**********, 0b**********************0000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000000001111**********, 0b**********************0000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x4000 &&& 32w0xfffff800, 32w0 &&& 32w0x7ff, 12w0..12w511 ) 
+            | 0b000000000000000001000***********, 0b*********************00000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x4800 &&& 32w0xfffff800, 32w0 &&& 32w0x7ff, 12w0..12w454 ) 
+            | 0b000000000000000001001***********, 0b*********************00000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001001***********, 0b*********************00000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b000000000000000001001***********, 0b*********************00000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001001***********, 0b*********************00000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001001***********, 0b*********************00000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b000000000000000001001***********, 0b*********************00000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x5000 &&& 32w0xfffff800, 32w0 &&& 32w0x7ff, 12w0..12w408 ) 
+            | 0b000000000000000001010***********, 0b*********************00000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001010***********, 0b*********************00000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b000000000000000001010***********, 0b*********************00000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001010***********, 0b*********************00000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001010***********, 0b*********************00000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x5800 &&& 32w0xfffff800, 32w0 &&& 32w0x7ff, 12w0..12w371 ) 
+            | 0b000000000000000001011***********, 0b*********************00000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001011***********, 0b*********************00000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001011***********, 0b*********************00000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001011***********, 0b*********************00000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001011***********, 0b*********************00000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x6000 &&& 32w0xfffff800, 32w0 &&& 32w0x7ff, 12w0..12w340 ) 
+            | 0b000000000000000001100***********, 0b*********************00000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001100***********, 0b*********************00000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001100***********, 0b*********************00000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001100***********, 0b*********************00000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001100***********, 0b*********************00000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x6800 &&& 32w0xfffff800, 32w0 &&& 32w0x7ff, 12w0..12w314 ) 
+            | 0b000000000000000001101***********, 0b*********************00000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001101***********, 0b*********************00000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001101***********, 0b*********************00000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001101***********, 0b*********************00000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001101***********, 0b*********************00000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b000000000000000001101***********, 0b*********************00000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x7000 &&& 32w0xfffff800, 32w0 &&& 32w0x7ff, 12w0..12w291 ) 
+            | 0b000000000000000001110***********, 0b*********************00000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001110***********, 0b*********************00000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001110***********, 0b*********************00000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x7800 &&& 32w0xfffff800, 32w0 &&& 32w0x7ff, 12w0..12w272 ) 
+            | 0b000000000000000001111***********, 0b*********************00000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001111***********, 0b*********************00000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b000000000000000001111***********, 0b*********************00000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x8000 &&& 32w0xfffff000, 32w0 &&& 32w0xfff, 12w0..12w511 ) 
+            | 0b00000000000000001000************, 0b********************000000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x9000 &&& 32w0xfffff000, 32w0 &&& 32w0xfff, 12w0..12w454 ) 
+            | 0b00000000000000001001************, 0b********************000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001001************, 0b********************000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b00000000000000001001************, 0b********************000000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001001************, 0b********************000000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001001************, 0b********************000000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b00000000000000001001************, 0b********************000000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0xa000 &&& 32w0xfffff000, 32w0 &&& 32w0xfff, 12w0..12w408 ) 
+            | 0b00000000000000001010************, 0b********************000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001010************, 0b********************000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b00000000000000001010************, 0b********************000000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001010************, 0b********************000000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001010************, 0b********************000000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0xb000 &&& 32w0xfffff000, 32w0 &&& 32w0xfff, 12w0..12w371 ) 
+            | 0b00000000000000001011************, 0b********************000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001011************, 0b********************000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001011************, 0b********************000000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001011************, 0b********************000000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001011************, 0b********************000000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0xc000 &&& 32w0xfffff000, 32w0 &&& 32w0xfff, 12w0..12w340 ) 
+            | 0b00000000000000001100************, 0b********************000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001100************, 0b********************000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001100************, 0b********************000000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001100************, 0b********************000000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001100************, 0b********************000000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0xd000 &&& 32w0xfffff000, 32w0 &&& 32w0xfff, 12w0..12w314 ) 
+            | 0b00000000000000001101************, 0b********************000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001101************, 0b********************000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001101************, 0b********************000000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001101************, 0b********************000000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001101************, 0b********************000000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b00000000000000001101************, 0b********************000000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0xe000 &&& 32w0xfffff000, 32w0 &&& 32w0xfff, 12w0..12w291 ) 
+            | 0b00000000000000001110************, 0b********************000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001110************, 0b********************000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001110************, 0b********************000000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0xf000 &&& 32w0xfffff000, 32w0 &&& 32w0xfff, 12w0..12w272 ) 
+            | 0b00000000000000001111************, 0b********************000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001111************, 0b********************000000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b00000000000000001111************, 0b********************000000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x10000 &&& 32w0xffffe000, 32w0 &&& 32w0x1fff, 12w0..12w511 ) 
+            | 0b0000000000000001000*************, 0b*******************0000000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x12000 &&& 32w0xffffe000, 32w0 &&& 32w0x1fff, 12w0..12w454 ) 
+            | 0b0000000000000001001*************, 0b*******************0000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001001*************, 0b*******************0000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b0000000000000001001*************, 0b*******************0000000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001001*************, 0b*******************0000000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001001*************, 0b*******************0000000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b0000000000000001001*************, 0b*******************0000000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x14000 &&& 32w0xffffe000, 32w0 &&& 32w0x1fff, 12w0..12w408 ) 
+            | 0b0000000000000001010*************, 0b*******************0000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001010*************, 0b*******************0000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b0000000000000001010*************, 0b*******************0000000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001010*************, 0b*******************0000000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001010*************, 0b*******************0000000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x16000 &&& 32w0xffffe000, 32w0 &&& 32w0x1fff, 12w0..12w371 ) 
+            | 0b0000000000000001011*************, 0b*******************0000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001011*************, 0b*******************0000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001011*************, 0b*******************0000000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001011*************, 0b*******************0000000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001011*************, 0b*******************0000000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x18000 &&& 32w0xffffe000, 32w0 &&& 32w0x1fff, 12w0..12w340 ) 
+            | 0b0000000000000001100*************, 0b*******************0000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001100*************, 0b*******************0000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001100*************, 0b*******************0000000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001100*************, 0b*******************0000000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001100*************, 0b*******************0000000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x1a000 &&& 32w0xffffe000, 32w0 &&& 32w0x1fff, 12w0..12w314 ) 
+            | 0b0000000000000001101*************, 0b*******************0000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001101*************, 0b*******************0000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001101*************, 0b*******************0000000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001101*************, 0b*******************0000000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001101*************, 0b*******************0000000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b0000000000000001101*************, 0b*******************0000000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x1c000 &&& 32w0xffffe000, 32w0 &&& 32w0x1fff, 12w0..12w291 ) 
+            | 0b0000000000000001110*************, 0b*******************0000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001110*************, 0b*******************0000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001110*************, 0b*******************0000000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x1e000 &&& 32w0xffffe000, 32w0 &&& 32w0x1fff, 12w0..12w272 ) 
+            | 0b0000000000000001111*************, 0b*******************0000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001111*************, 0b*******************0000000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b0000000000000001111*************, 0b*******************0000000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x20000 &&& 32w0xffffc000, 32w0 &&& 32w0x3fff, 12w0..12w511 ) 
+            | 0b000000000000001000**************, 0b******************00000000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x24000 &&& 32w0xffffc000, 32w0 &&& 32w0x3fff, 12w0..12w454 ) 
+            | 0b000000000000001001**************, 0b******************00000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000001001**************, 0b******************00000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b000000000000001001**************, 0b******************00000000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b000000000000001001**************, 0b******************00000000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b000000000000001001**************, 0b******************00000000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b000000000000001001**************, 0b******************00000000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x28000 &&& 32w0xffffc000, 32w0 &&& 32w0x3fff, 12w0..12w408 ) 
+            | 0b000000000000001010**************, 0b******************00000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000001010**************, 0b******************00000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b000000000000001010**************, 0b******************00000000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b000000000000001010**************, 0b******************00000000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b000000000000001010**************, 0b******************00000000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x2c000 &&& 32w0xffffc000, 32w0 &&& 32w0x3fff, 12w0..12w371 ) 
+            | 0b000000000000001011**************, 0b******************00000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000001011**************, 0b******************00000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b000000000000001011**************, 0b******************00000000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b000000000000001011**************, 0b******************00000000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b000000000000001011**************, 0b******************00000000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x30000 &&& 32w0xffffc000, 32w0 &&& 32w0x3fff, 12w0..12w340 ) 
+            | 0b000000000000001100**************, 0b******************00000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000001100**************, 0b******************00000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b000000000000001100**************, 0b******************00000000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b000000000000001100**************, 0b******************00000000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b000000000000001100**************, 0b******************00000000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x34000 &&& 32w0xffffc000, 32w0 &&& 32w0x3fff, 12w0..12w314 ) 
+            | 0b000000000000001101**************, 0b******************00000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000001101**************, 0b******************00000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b000000000000001101**************, 0b******************00000000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b000000000000001101**************, 0b******************00000000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b000000000000001101**************, 0b******************00000000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b000000000000001101**************, 0b******************00000000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x38000 &&& 32w0xffffc000, 32w0 &&& 32w0x3fff, 12w0..12w291 ) 
+            | 0b000000000000001110**************, 0b******************00000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000001110**************, 0b******************00000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b000000000000001110**************, 0b******************00000000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x3c000 &&& 32w0xffffc000, 32w0 &&& 32w0x3fff, 12w0..12w272 ) 
+            | 0b000000000000001111**************, 0b******************00000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000000001111**************, 0b******************00000000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b000000000000001111**************, 0b******************00000000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x40000 &&& 32w0xffff8000, 32w0 &&& 32w0x7fff, 12w0..12w511 ) 
+            | 0b00000000000001000***************, 0b*****************000000000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x48000 &&& 32w0xffff8000, 32w0 &&& 32w0x7fff, 12w0..12w454 ) 
+            | 0b00000000000001001***************, 0b*****************000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000001001***************, 0b*****************000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b00000000000001001***************, 0b*****************000000000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b00000000000001001***************, 0b*****************000000000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b00000000000001001***************, 0b*****************000000000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b00000000000001001***************, 0b*****************000000000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x50000 &&& 32w0xffff8000, 32w0 &&& 32w0x7fff, 12w0..12w408 ) 
+            | 0b00000000000001010***************, 0b*****************000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000001010***************, 0b*****************000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b00000000000001010***************, 0b*****************000000000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b00000000000001010***************, 0b*****************000000000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b00000000000001010***************, 0b*****************000000000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x58000 &&& 32w0xffff8000, 32w0 &&& 32w0x7fff, 12w0..12w371 ) 
+            | 0b00000000000001011***************, 0b*****************000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000001011***************, 0b*****************000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b00000000000001011***************, 0b*****************000000000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b00000000000001011***************, 0b*****************000000000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b00000000000001011***************, 0b*****************000000000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x60000 &&& 32w0xffff8000, 32w0 &&& 32w0x7fff, 12w0..12w340 ) 
+            | 0b00000000000001100***************, 0b*****************000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000001100***************, 0b*****************000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b00000000000001100***************, 0b*****************000000000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b00000000000001100***************, 0b*****************000000000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b00000000000001100***************, 0b*****************000000000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x68000 &&& 32w0xffff8000, 32w0 &&& 32w0x7fff, 12w0..12w314 ) 
+            | 0b00000000000001101***************, 0b*****************000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000001101***************, 0b*****************000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b00000000000001101***************, 0b*****************000000000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b00000000000001101***************, 0b*****************000000000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b00000000000001101***************, 0b*****************000000000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b00000000000001101***************, 0b*****************000000000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x70000 &&& 32w0xffff8000, 32w0 &&& 32w0x7fff, 12w0..12w291 ) 
+            | 0b00000000000001110***************, 0b*****************000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000001110***************, 0b*****************000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b00000000000001110***************, 0b*****************000000000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x78000 &&& 32w0xffff8000, 32w0 &&& 32w0x7fff, 12w0..12w272 ) 
+            | 0b00000000000001111***************, 0b*****************000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000000001111***************, 0b*****************000000000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b00000000000001111***************, 0b*****************000000000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x80000 &&& 32w0xffff0000, 32w0 &&& 32w0xffff, 12w0..12w511 ) 
+            | 0b0000000000001000****************, 0b****************0000000000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x90000 &&& 32w0xffff0000, 32w0 &&& 32w0xffff, 12w0..12w454 ) 
+            | 0b0000000000001001****************, 0b****************0000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000001001****************, 0b****************0000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b0000000000001001****************, 0b****************0000000000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b0000000000001001****************, 0b****************0000000000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b0000000000001001****************, 0b****************0000000000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b0000000000001001****************, 0b****************0000000000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0xa0000 &&& 32w0xffff0000, 32w0 &&& 32w0xffff, 12w0..12w408 ) 
+            | 0b0000000000001010****************, 0b****************0000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000001010****************, 0b****************0000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b0000000000001010****************, 0b****************0000000000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b0000000000001010****************, 0b****************0000000000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b0000000000001010****************, 0b****************0000000000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0xb0000 &&& 32w0xffff0000, 32w0 &&& 32w0xffff, 12w0..12w371 ) 
+            | 0b0000000000001011****************, 0b****************0000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000001011****************, 0b****************0000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b0000000000001011****************, 0b****************0000000000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b0000000000001011****************, 0b****************0000000000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b0000000000001011****************, 0b****************0000000000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0xc0000 &&& 32w0xffff0000, 32w0 &&& 32w0xffff, 12w0..12w340 ) 
+            | 0b0000000000001100****************, 0b****************0000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000001100****************, 0b****************0000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b0000000000001100****************, 0b****************0000000000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b0000000000001100****************, 0b****************0000000000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b0000000000001100****************, 0b****************0000000000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0xd0000 &&& 32w0xffff0000, 32w0 &&& 32w0xffff, 12w0..12w314 ) 
+            | 0b0000000000001101****************, 0b****************0000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000001101****************, 0b****************0000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b0000000000001101****************, 0b****************0000000000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b0000000000001101****************, 0b****************0000000000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b0000000000001101****************, 0b****************0000000000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b0000000000001101****************, 0b****************0000000000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0xe0000 &&& 32w0xffff0000, 32w0 &&& 32w0xffff, 12w0..12w291 ) 
+            | 0b0000000000001110****************, 0b****************0000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000001110****************, 0b****************0000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b0000000000001110****************, 0b****************0000000000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0xf0000 &&& 32w0xffff0000, 32w0 &&& 32w0xffff, 12w0..12w272 ) 
+            | 0b0000000000001111****************, 0b****************0000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000000001111****************, 0b****************0000000000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b0000000000001111****************, 0b****************0000000000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x100000 &&& 32w0xfffe0000, 32w0 &&& 32w0x1ffff, 12w0..12w511 ) 
+            | 0b000000000001000*****************, 0b***************00000000000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x120000 &&& 32w0xfffe0000, 32w0 &&& 32w0x1ffff, 12w0..12w454 ) 
+            | 0b000000000001001*****************, 0b***************00000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000001001*****************, 0b***************00000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b000000000001001*****************, 0b***************00000000000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b000000000001001*****************, 0b***************00000000000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b000000000001001*****************, 0b***************00000000000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b000000000001001*****************, 0b***************00000000000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x140000 &&& 32w0xfffe0000, 32w0 &&& 32w0x1ffff, 12w0..12w408 ) 
+            | 0b000000000001010*****************, 0b***************00000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000001010*****************, 0b***************00000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b000000000001010*****************, 0b***************00000000000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b000000000001010*****************, 0b***************00000000000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b000000000001010*****************, 0b***************00000000000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x160000 &&& 32w0xfffe0000, 32w0 &&& 32w0x1ffff, 12w0..12w371 ) 
+            | 0b000000000001011*****************, 0b***************00000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000001011*****************, 0b***************00000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b000000000001011*****************, 0b***************00000000000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b000000000001011*****************, 0b***************00000000000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b000000000001011*****************, 0b***************00000000000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x180000 &&& 32w0xfffe0000, 32w0 &&& 32w0x1ffff, 12w0..12w340 ) 
+            | 0b000000000001100*****************, 0b***************00000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000001100*****************, 0b***************00000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b000000000001100*****************, 0b***************00000000000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b000000000001100*****************, 0b***************00000000000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b000000000001100*****************, 0b***************00000000000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x1a0000 &&& 32w0xfffe0000, 32w0 &&& 32w0x1ffff, 12w0..12w314 ) 
+            | 0b000000000001101*****************, 0b***************00000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000001101*****************, 0b***************00000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b000000000001101*****************, 0b***************00000000000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b000000000001101*****************, 0b***************00000000000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b000000000001101*****************, 0b***************00000000000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b000000000001101*****************, 0b***************00000000000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x1c0000 &&& 32w0xfffe0000, 32w0 &&& 32w0x1ffff, 12w0..12w291 ) 
+            | 0b000000000001110*****************, 0b***************00000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000001110*****************, 0b***************00000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b000000000001110*****************, 0b***************00000000000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x1e0000 &&& 32w0xfffe0000, 32w0 &&& 32w0x1ffff, 12w0..12w272 ) 
+            | 0b000000000001111*****************, 0b***************00000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000000001111*****************, 0b***************00000000000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b000000000001111*****************, 0b***************00000000000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x200000 &&& 32w0xfffc0000, 32w0 &&& 32w0x3ffff, 12w0..12w511 ) 
+            | 0b00000000001000******************, 0b**************000000000000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x240000 &&& 32w0xfffc0000, 32w0 &&& 32w0x3ffff, 12w0..12w454 ) 
+            | 0b00000000001001******************, 0b**************000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000001001******************, 0b**************000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b00000000001001******************, 0b**************000000000000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b00000000001001******************, 0b**************000000000000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b00000000001001******************, 0b**************000000000000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b00000000001001******************, 0b**************000000000000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x280000 &&& 32w0xfffc0000, 32w0 &&& 32w0x3ffff, 12w0..12w408 ) 
+            | 0b00000000001010******************, 0b**************000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000001010******************, 0b**************000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b00000000001010******************, 0b**************000000000000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b00000000001010******************, 0b**************000000000000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b00000000001010******************, 0b**************000000000000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x2c0000 &&& 32w0xfffc0000, 32w0 &&& 32w0x3ffff, 12w0..12w371 ) 
+            | 0b00000000001011******************, 0b**************000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000001011******************, 0b**************000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b00000000001011******************, 0b**************000000000000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b00000000001011******************, 0b**************000000000000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b00000000001011******************, 0b**************000000000000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x300000 &&& 32w0xfffc0000, 32w0 &&& 32w0x3ffff, 12w0..12w340 ) 
+            | 0b00000000001100******************, 0b**************000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000001100******************, 0b**************000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b00000000001100******************, 0b**************000000000000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b00000000001100******************, 0b**************000000000000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b00000000001100******************, 0b**************000000000000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x340000 &&& 32w0xfffc0000, 32w0 &&& 32w0x3ffff, 12w0..12w314 ) 
+            | 0b00000000001101******************, 0b**************000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000001101******************, 0b**************000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b00000000001101******************, 0b**************000000000000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b00000000001101******************, 0b**************000000000000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b00000000001101******************, 0b**************000000000000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b00000000001101******************, 0b**************000000000000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x380000 &&& 32w0xfffc0000, 32w0 &&& 32w0x3ffff, 12w0..12w291 ) 
+            | 0b00000000001110******************, 0b**************000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000001110******************, 0b**************000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b00000000001110******************, 0b**************000000000000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x3c0000 &&& 32w0xfffc0000, 32w0 &&& 32w0x3ffff, 12w0..12w272 ) 
+            | 0b00000000001111******************, 0b**************000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000000001111******************, 0b**************000000000000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b00000000001111******************, 0b**************000000000000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x400000 &&& 32w0xfff80000, 32w0 &&& 32w0x7ffff, 12w0..12w511 ) 
+            | 0b0000000001000*******************, 0b*************0000000000000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x480000 &&& 32w0xfff80000, 32w0 &&& 32w0x7ffff, 12w0..12w454 ) 
+            | 0b0000000001001*******************, 0b*************0000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000001001*******************, 0b*************0000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b0000000001001*******************, 0b*************0000000000000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b0000000001001*******************, 0b*************0000000000000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b0000000001001*******************, 0b*************0000000000000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b0000000001001*******************, 0b*************0000000000000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x500000 &&& 32w0xfff80000, 32w0 &&& 32w0x7ffff, 12w0..12w408 ) 
+            | 0b0000000001010*******************, 0b*************0000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000001010*******************, 0b*************0000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b0000000001010*******************, 0b*************0000000000000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b0000000001010*******************, 0b*************0000000000000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b0000000001010*******************, 0b*************0000000000000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x580000 &&& 32w0xfff80000, 32w0 &&& 32w0x7ffff, 12w0..12w371 ) 
+            | 0b0000000001011*******************, 0b*************0000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000001011*******************, 0b*************0000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b0000000001011*******************, 0b*************0000000000000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b0000000001011*******************, 0b*************0000000000000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b0000000001011*******************, 0b*************0000000000000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x600000 &&& 32w0xfff80000, 32w0 &&& 32w0x7ffff, 12w0..12w340 ) 
+            | 0b0000000001100*******************, 0b*************0000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000001100*******************, 0b*************0000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b0000000001100*******************, 0b*************0000000000000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b0000000001100*******************, 0b*************0000000000000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b0000000001100*******************, 0b*************0000000000000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x680000 &&& 32w0xfff80000, 32w0 &&& 32w0x7ffff, 12w0..12w314 ) 
+            | 0b0000000001101*******************, 0b*************0000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000001101*******************, 0b*************0000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b0000000001101*******************, 0b*************0000000000000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b0000000001101*******************, 0b*************0000000000000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b0000000001101*******************, 0b*************0000000000000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b0000000001101*******************, 0b*************0000000000000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x700000 &&& 32w0xfff80000, 32w0 &&& 32w0x7ffff, 12w0..12w291 ) 
+            | 0b0000000001110*******************, 0b*************0000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000001110*******************, 0b*************0000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b0000000001110*******************, 0b*************0000000000000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x780000 &&& 32w0xfff80000, 32w0 &&& 32w0x7ffff, 12w0..12w272 ) 
+            | 0b0000000001111*******************, 0b*************0000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000000001111*******************, 0b*************0000000000000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b0000000001111*******************, 0b*************0000000000000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x800000 &&& 32w0xfff00000, 32w0 &&& 32w0xfffff, 12w0..12w511 ) 
+            | 0b000000001000********************, 0b************00000000000000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x900000 &&& 32w0xfff00000, 32w0 &&& 32w0xfffff, 12w0..12w454 ) 
+            | 0b000000001001********************, 0b************00000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000001001********************, 0b************00000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b000000001001********************, 0b************00000000000000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b000000001001********************, 0b************00000000000000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b000000001001********************, 0b************00000000000000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b000000001001********************, 0b************00000000000000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0xa00000 &&& 32w0xfff00000, 32w0 &&& 32w0xfffff, 12w0..12w408 ) 
+            | 0b000000001010********************, 0b************00000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000001010********************, 0b************00000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b000000001010********************, 0b************00000000000000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b000000001010********************, 0b************00000000000000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b000000001010********************, 0b************00000000000000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0xb00000 &&& 32w0xfff00000, 32w0 &&& 32w0xfffff, 12w0..12w371 ) 
+            | 0b000000001011********************, 0b************00000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000001011********************, 0b************00000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b000000001011********************, 0b************00000000000000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b000000001011********************, 0b************00000000000000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b000000001011********************, 0b************00000000000000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0xc00000 &&& 32w0xfff00000, 32w0 &&& 32w0xfffff, 12w0..12w340 ) 
+            | 0b000000001100********************, 0b************00000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000001100********************, 0b************00000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b000000001100********************, 0b************00000000000000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b000000001100********************, 0b************00000000000000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b000000001100********************, 0b************00000000000000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0xd00000 &&& 32w0xfff00000, 32w0 &&& 32w0xfffff, 12w0..12w314 ) 
+            | 0b000000001101********************, 0b************00000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000001101********************, 0b************00000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b000000001101********************, 0b************00000000000000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b000000001101********************, 0b************00000000000000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b000000001101********************, 0b************00000000000000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b000000001101********************, 0b************00000000000000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0xe00000 &&& 32w0xfff00000, 32w0 &&& 32w0xfffff, 12w0..12w291 ) 
+            | 0b000000001110********************, 0b************00000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000001110********************, 0b************00000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b000000001110********************, 0b************00000000000000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0xf00000 &&& 32w0xfff00000, 32w0 &&& 32w0xfffff, 12w0..12w272 ) 
+            | 0b000000001111********************, 0b************00000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000000001111********************, 0b************00000000000000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b000000001111********************, 0b************00000000000000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x1000000 &&& 32w0xffe00000, 32w0 &&& 32w0x1fffff, 12w0..12w511 ) 
+            | 0b00000001000*********************, 0b***********000000000000000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x1200000 &&& 32w0xffe00000, 32w0 &&& 32w0x1fffff, 12w0..12w454 ) 
+            | 0b00000001001*********************, 0b***********000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000001001*********************, 0b***********000000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b00000001001*********************, 0b***********000000000000000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b00000001001*********************, 0b***********000000000000000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b00000001001*********************, 0b***********000000000000000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b00000001001*********************, 0b***********000000000000000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x1400000 &&& 32w0xffe00000, 32w0 &&& 32w0x1fffff, 12w0..12w408 ) 
+            | 0b00000001010*********************, 0b***********000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000001010*********************, 0b***********000000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b00000001010*********************, 0b***********000000000000000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b00000001010*********************, 0b***********000000000000000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b00000001010*********************, 0b***********000000000000000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x1600000 &&& 32w0xffe00000, 32w0 &&& 32w0x1fffff, 12w0..12w371 ) 
+            | 0b00000001011*********************, 0b***********000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000001011*********************, 0b***********000000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b00000001011*********************, 0b***********000000000000000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b00000001011*********************, 0b***********000000000000000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b00000001011*********************, 0b***********000000000000000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x1800000 &&& 32w0xffe00000, 32w0 &&& 32w0x1fffff, 12w0..12w340 ) 
+            | 0b00000001100*********************, 0b***********000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000001100*********************, 0b***********000000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b00000001100*********************, 0b***********000000000000000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b00000001100*********************, 0b***********000000000000000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b00000001100*********************, 0b***********000000000000000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x1a00000 &&& 32w0xffe00000, 32w0 &&& 32w0x1fffff, 12w0..12w314 ) 
+            | 0b00000001101*********************, 0b***********000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000001101*********************, 0b***********000000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b00000001101*********************, 0b***********000000000000000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b00000001101*********************, 0b***********000000000000000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b00000001101*********************, 0b***********000000000000000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b00000001101*********************, 0b***********000000000000000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x1c00000 &&& 32w0xffe00000, 32w0 &&& 32w0x1fffff, 12w0..12w291 ) 
+            | 0b00000001110*********************, 0b***********000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000001110*********************, 0b***********000000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b00000001110*********************, 0b***********000000000000000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x1e00000 &&& 32w0xffe00000, 32w0 &&& 32w0x1fffff, 12w0..12w272 ) 
+            | 0b00000001111*********************, 0b***********000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00000001111*********************, 0b***********000000000000000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b00000001111*********************, 0b***********000000000000000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x2000000 &&& 32w0xffc00000, 32w0 &&& 32w0x3fffff, 12w0..12w511 ) 
+            | 0b0000001000**********************, 0b**********0000000000000000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x2400000 &&& 32w0xffc00000, 32w0 &&& 32w0x3fffff, 12w0..12w454 ) 
+            | 0b0000001001**********************, 0b**********0000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000001001**********************, 0b**********0000000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b0000001001**********************, 0b**********0000000000000000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b0000001001**********************, 0b**********0000000000000000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b0000001001**********************, 0b**********0000000000000000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b0000001001**********************, 0b**********0000000000000000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x2800000 &&& 32w0xffc00000, 32w0 &&& 32w0x3fffff, 12w0..12w408 ) 
+            | 0b0000001010**********************, 0b**********0000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000001010**********************, 0b**********0000000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b0000001010**********************, 0b**********0000000000000000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b0000001010**********************, 0b**********0000000000000000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b0000001010**********************, 0b**********0000000000000000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x2c00000 &&& 32w0xffc00000, 32w0 &&& 32w0x3fffff, 12w0..12w371 ) 
+            | 0b0000001011**********************, 0b**********0000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000001011**********************, 0b**********0000000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b0000001011**********************, 0b**********0000000000000000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b0000001011**********************, 0b**********0000000000000000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b0000001011**********************, 0b**********0000000000000000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x3000000 &&& 32w0xffc00000, 32w0 &&& 32w0x3fffff, 12w0..12w340 ) 
+            | 0b0000001100**********************, 0b**********0000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000001100**********************, 0b**********0000000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b0000001100**********************, 0b**********0000000000000000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b0000001100**********************, 0b**********0000000000000000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b0000001100**********************, 0b**********0000000000000000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x3400000 &&& 32w0xffc00000, 32w0 &&& 32w0x3fffff, 12w0..12w314 ) 
+            | 0b0000001101**********************, 0b**********0000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000001101**********************, 0b**********0000000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b0000001101**********************, 0b**********0000000000000000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b0000001101**********************, 0b**********0000000000000000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b0000001101**********************, 0b**********0000000000000000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b0000001101**********************, 0b**********0000000000000000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x3800000 &&& 32w0xffc00000, 32w0 &&& 32w0x3fffff, 12w0..12w291 ) 
+            | 0b0000001110**********************, 0b**********0000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000001110**********************, 0b**********0000000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b0000001110**********************, 0b**********0000000000000000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x3c00000 &&& 32w0xffc00000, 32w0 &&& 32w0x3fffff, 12w0..12w272 ) 
+            | 0b0000001111**********************, 0b**********0000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0000001111**********************, 0b**********0000000000000000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b0000001111**********************, 0b**********0000000000000000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x4000000 &&& 32w0xff800000, 32w0 &&& 32w0x7fffff, 12w0..12w511 ) 
+            | 0b000001000***********************, 0b*********00000000000000000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x4800000 &&& 32w0xff800000, 32w0 &&& 32w0x7fffff, 12w0..12w454 ) 
+            | 0b000001001***********************, 0b*********00000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000001001***********************, 0b*********00000000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b000001001***********************, 0b*********00000000000000000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b000001001***********************, 0b*********00000000000000000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b000001001***********************, 0b*********00000000000000000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b000001001***********************, 0b*********00000000000000000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x5000000 &&& 32w0xff800000, 32w0 &&& 32w0x7fffff, 12w0..12w408 ) 
+            | 0b000001010***********************, 0b*********00000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000001010***********************, 0b*********00000000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b000001010***********************, 0b*********00000000000000000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b000001010***********************, 0b*********00000000000000000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b000001010***********************, 0b*********00000000000000000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x5800000 &&& 32w0xff800000, 32w0 &&& 32w0x7fffff, 12w0..12w371 ) 
+            | 0b000001011***********************, 0b*********00000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000001011***********************, 0b*********00000000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b000001011***********************, 0b*********00000000000000000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b000001011***********************, 0b*********00000000000000000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b000001011***********************, 0b*********00000000000000000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x6000000 &&& 32w0xff800000, 32w0 &&& 32w0x7fffff, 12w0..12w340 ) 
+            | 0b000001100***********************, 0b*********00000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000001100***********************, 0b*********00000000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b000001100***********************, 0b*********00000000000000000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b000001100***********************, 0b*********00000000000000000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b000001100***********************, 0b*********00000000000000000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x6800000 &&& 32w0xff800000, 32w0 &&& 32w0x7fffff, 12w0..12w314 ) 
+            | 0b000001101***********************, 0b*********00000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000001101***********************, 0b*********00000000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b000001101***********************, 0b*********00000000000000000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b000001101***********************, 0b*********00000000000000000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b000001101***********************, 0b*********00000000000000000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b000001101***********************, 0b*********00000000000000000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x7000000 &&& 32w0xff800000, 32w0 &&& 32w0x7fffff, 12w0..12w291 ) 
+            | 0b000001110***********************, 0b*********00000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000001110***********************, 0b*********00000000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b000001110***********************, 0b*********00000000000000000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x7800000 &&& 32w0xff800000, 32w0 &&& 32w0x7fffff, 12w0..12w272 ) 
+            | 0b000001111***********************, 0b*********00000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b000001111***********************, 0b*********00000000000000000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b000001111***********************, 0b*********00000000000000000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x8000000 &&& 32w0xff000000, 32w0 &&& 32w0xffffff, 12w0..12w511 ) 
+            | 0b00001000************************, 0b********000000000000000000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x9000000 &&& 32w0xff000000, 32w0 &&& 32w0xffffff, 12w0..12w454 ) 
+            | 0b00001001************************, 0b********000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00001001************************, 0b********000000000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b00001001************************, 0b********000000000000000000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b00001001************************, 0b********000000000000000000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b00001001************************, 0b********000000000000000000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b00001001************************, 0b********000000000000000000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0xa000000 &&& 32w0xff000000, 32w0 &&& 32w0xffffff, 12w0..12w408 ) 
+            | 0b00001010************************, 0b********000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00001010************************, 0b********000000000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b00001010************************, 0b********000000000000000000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b00001010************************, 0b********000000000000000000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b00001010************************, 0b********000000000000000000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0xb000000 &&& 32w0xff000000, 32w0 &&& 32w0xffffff, 12w0..12w371 ) 
+            | 0b00001011************************, 0b********000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00001011************************, 0b********000000000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b00001011************************, 0b********000000000000000000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b00001011************************, 0b********000000000000000000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b00001011************************, 0b********000000000000000000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0xc000000 &&& 32w0xff000000, 32w0 &&& 32w0xffffff, 12w0..12w340 ) 
+            | 0b00001100************************, 0b********000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00001100************************, 0b********000000000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b00001100************************, 0b********000000000000000000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b00001100************************, 0b********000000000000000000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b00001100************************, 0b********000000000000000000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0xd000000 &&& 32w0xff000000, 32w0 &&& 32w0xffffff, 12w0..12w314 ) 
+            | 0b00001101************************, 0b********000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00001101************************, 0b********000000000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b00001101************************, 0b********000000000000000000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b00001101************************, 0b********000000000000000000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b00001101************************, 0b********000000000000000000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b00001101************************, 0b********000000000000000000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0xe000000 &&& 32w0xff000000, 32w0 &&& 32w0xffffff, 12w0..12w291 ) 
+            | 0b00001110************************, 0b********000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00001110************************, 0b********000000000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b00001110************************, 0b********000000000000000000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0xf000000 &&& 32w0xff000000, 32w0 &&& 32w0xffffff, 12w0..12w272 ) 
+            | 0b00001111************************, 0b********000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b00001111************************, 0b********000000000000000000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b00001111************************, 0b********000000000000000000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x10000000 &&& 32w0xfe000000, 32w0 &&& 32w0x1ffffff, 12w0..12w511 ) 
+            | 0b0001000*************************, 0b*******0000000000000000000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x12000000 &&& 32w0xfe000000, 32w0 &&& 32w0x1ffffff, 12w0..12w454 ) 
+            | 0b0001001*************************, 0b*******0000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0001001*************************, 0b*******0000000000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b0001001*************************, 0b*******0000000000000000000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b0001001*************************, 0b*******0000000000000000000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b0001001*************************, 0b*******0000000000000000000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b0001001*************************, 0b*******0000000000000000000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x14000000 &&& 32w0xfe000000, 32w0 &&& 32w0x1ffffff, 12w0..12w408 ) 
+            | 0b0001010*************************, 0b*******0000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0001010*************************, 0b*******0000000000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b0001010*************************, 0b*******0000000000000000000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b0001010*************************, 0b*******0000000000000000000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b0001010*************************, 0b*******0000000000000000000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x16000000 &&& 32w0xfe000000, 32w0 &&& 32w0x1ffffff, 12w0..12w371 ) 
+            | 0b0001011*************************, 0b*******0000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0001011*************************, 0b*******0000000000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b0001011*************************, 0b*******0000000000000000000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b0001011*************************, 0b*******0000000000000000000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b0001011*************************, 0b*******0000000000000000000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x18000000 &&& 32w0xfe000000, 32w0 &&& 32w0x1ffffff, 12w0..12w340 ) 
+            | 0b0001100*************************, 0b*******0000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0001100*************************, 0b*******0000000000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b0001100*************************, 0b*******0000000000000000000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b0001100*************************, 0b*******0000000000000000000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b0001100*************************, 0b*******0000000000000000000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x1a000000 &&& 32w0xfe000000, 32w0 &&& 32w0x1ffffff, 12w0..12w314 ) 
+            | 0b0001101*************************, 0b*******0000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0001101*************************, 0b*******0000000000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b0001101*************************, 0b*******0000000000000000000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b0001101*************************, 0b*******0000000000000000000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b0001101*************************, 0b*******0000000000000000000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b0001101*************************, 0b*******0000000000000000000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x1c000000 &&& 32w0xfe000000, 32w0 &&& 32w0x1ffffff, 12w0..12w291 ) 
+            | 0b0001110*************************, 0b*******0000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0001110*************************, 0b*******0000000000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b0001110*************************, 0b*******0000000000000000000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x1e000000 &&& 32w0xfe000000, 32w0 &&& 32w0x1ffffff, 12w0..12w272 ) 
+            | 0b0001111*************************, 0b*******0000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b0001111*************************, 0b*******0000000000000000000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b0001111*************************, 0b*******0000000000000000000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x20000000 &&& 32w0xfc000000, 32w0 &&& 32w0x3ffffff, 12w0..12w511 ) 
+            | 0b001000**************************, 0b******00000000000000000000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x24000000 &&& 32w0xfc000000, 32w0 &&& 32w0x3ffffff, 12w0..12w454 ) 
+            | 0b001001**************************, 0b******00000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b001001**************************, 0b******00000000000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b001001**************************, 0b******00000000000000000000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b001001**************************, 0b******00000000000000000000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b001001**************************, 0b******00000000000000000000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b001001**************************, 0b******00000000000000000000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x28000000 &&& 32w0xfc000000, 32w0 &&& 32w0x3ffffff, 12w0..12w408 ) 
+            | 0b001010**************************, 0b******00000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b001010**************************, 0b******00000000000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b001010**************************, 0b******00000000000000000000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b001010**************************, 0b******00000000000000000000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b001010**************************, 0b******00000000000000000000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x2c000000 &&& 32w0xfc000000, 32w0 &&& 32w0x3ffffff, 12w0..12w371 ) 
+            | 0b001011**************************, 0b******00000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b001011**************************, 0b******00000000000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b001011**************************, 0b******00000000000000000000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b001011**************************, 0b******00000000000000000000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b001011**************************, 0b******00000000000000000000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x30000000 &&& 32w0xfc000000, 32w0 &&& 32w0x3ffffff, 12w0..12w340 ) 
+            | 0b001100**************************, 0b******00000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b001100**************************, 0b******00000000000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b001100**************************, 0b******00000000000000000000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b001100**************************, 0b******00000000000000000000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b001100**************************, 0b******00000000000000000000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x34000000 &&& 32w0xfc000000, 32w0 &&& 32w0x3ffffff, 12w0..12w314 ) 
+            | 0b001101**************************, 0b******00000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b001101**************************, 0b******00000000000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b001101**************************, 0b******00000000000000000000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b001101**************************, 0b******00000000000000000000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b001101**************************, 0b******00000000000000000000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b001101**************************, 0b******00000000000000000000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x38000000 &&& 32w0xfc000000, 32w0 &&& 32w0x3ffffff, 12w0..12w291 ) 
+            | 0b001110**************************, 0b******00000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b001110**************************, 0b******00000000000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b001110**************************, 0b******00000000000000000000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x3c000000 &&& 32w0xfc000000, 32w0 &&& 32w0x3ffffff, 12w0..12w272 ) 
+            | 0b001111**************************, 0b******00000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b001111**************************, 0b******00000000000000000000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b001111**************************, 0b******00000000000000000000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x40000000 &&& 32w0xf8000000, 32w0 &&& 32w0x7ffffff, 12w0..12w511 ) 
+            | 0b01000***************************, 0b*****000000000000000000000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x48000000 &&& 32w0xf8000000, 32w0 &&& 32w0x7ffffff, 12w0..12w454 ) 
+            | 0b01001***************************, 0b*****000000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b01001***************************, 0b*****000000000000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b01001***************************, 0b*****000000000000000000000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b01001***************************, 0b*****000000000000000000000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b01001***************************, 0b*****000000000000000000000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b01001***************************, 0b*****000000000000000000000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0x50000000 &&& 32w0xf8000000, 32w0 &&& 32w0x7ffffff, 12w0..12w408 ) 
+            | 0b01010***************************, 0b*****000000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b01010***************************, 0b*****000000000000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b01010***************************, 0b*****000000000000000000000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b01010***************************, 0b*****000000000000000000000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b01010***************************, 0b*****000000000000000000000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0x58000000 &&& 32w0xf8000000, 32w0 &&& 32w0x7ffffff, 12w0..12w371 ) 
+            | 0b01011***************************, 0b*****000000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b01011***************************, 0b*****000000000000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b01011***************************, 0b*****000000000000000000000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b01011***************************, 0b*****000000000000000000000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b01011***************************, 0b*****000000000000000000000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0x60000000 &&& 32w0xf8000000, 32w0 &&& 32w0x7ffffff, 12w0..12w340 ) 
+            | 0b01100***************************, 0b*****000000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b01100***************************, 0b*****000000000000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b01100***************************, 0b*****000000000000000000000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b01100***************************, 0b*****000000000000000000000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b01100***************************, 0b*****000000000000000000000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0x68000000 &&& 32w0xf8000000, 32w0 &&& 32w0x7ffffff, 12w0..12w314 ) 
+            | 0b01101***************************, 0b*****000000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b01101***************************, 0b*****000000000000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b01101***************************, 0b*****000000000000000000000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b01101***************************, 0b*****000000000000000000000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b01101***************************, 0b*****000000000000000000000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b01101***************************, 0b*****000000000000000000000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0x70000000 &&& 32w0xf8000000, 32w0 &&& 32w0x7ffffff, 12w0..12w291 ) 
+            | 0b01110***************************, 0b*****000000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b01110***************************, 0b*****000000000000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b01110***************************, 0b*****000000000000000000000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0x78000000 &&& 32w0xf8000000, 32w0 &&& 32w0x7ffffff, 12w0..12w272 ) 
+            | 0b01111***************************, 0b*****000000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b01111***************************, 0b*****000000000000000000000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b01111***************************, 0b*****000000000000000000000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            //(32w0x80000000 &&& 32w0xf0000000, 32w0 &&& 32w0xfffffff, 12w0..12w511 ) 
+            | 0b1000****************************, 0b****0000000000000000000000000000, 0b000********* -> { return resubmitted_min_stage; }
+            //(32w0x90000000 &&& 32w0xf0000000, 32w0 &&& 32w0xfffffff, 12w0..12w454 ) 
+            | 0b1001****************************, 0b****0000000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b1001****************************, 0b****0000000000000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b1001****************************, 0b****0000000000000000000000000000, 0b000110****** -> { return resubmitted_min_stage; }
+            | 0b1001****************************, 0b****0000000000000000000000000000, 0b0001110000** -> { return resubmitted_min_stage; }
+            | 0b1001****************************, 0b****0000000000000000000000000000, 0b00011100010* -> { return resubmitted_min_stage; }
+            | 0b1001****************************, 0b****0000000000000000000000000000, 0b000111000110 -> { return resubmitted_min_stage; }
+            //(32w0xa0000000 &&& 32w0xf0000000, 32w0 &&& 32w0xfffffff, 12w0..12w408 ) 
+            | 0b1010****************************, 0b****0000000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b1010****************************, 0b****0000000000000000000000000000, 0b00010******* -> { return resubmitted_min_stage; }
+            | 0b1010****************************, 0b****0000000000000000000000000000, 0b00011000**** -> { return resubmitted_min_stage; }
+            | 0b1010****************************, 0b****0000000000000000000000000000, 0b000110010*** -> { return resubmitted_min_stage; }
+            | 0b1010****************************, 0b****0000000000000000000000000000, 0b000110011000 -> { return resubmitted_min_stage; }
+            //(32w0xb0000000 &&& 32w0xf0000000, 32w0 &&& 32w0xfffffff, 12w0..12w371 ) 
+            | 0b1011****************************, 0b****0000000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b1011****************************, 0b****0000000000000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b1011****************************, 0b****0000000000000000000000000000, 0b0001010***** -> { return resubmitted_min_stage; }
+            | 0b1011****************************, 0b****0000000000000000000000000000, 0b00010110**** -> { return resubmitted_min_stage; }
+            | 0b1011****************************, 0b****0000000000000000000000000000, 0b0001011100** -> { return resubmitted_min_stage; }
+            //(32w0xc0000000 &&& 32w0xf0000000, 32w0 &&& 32w0xfffffff, 12w0..12w340 ) 
+            | 0b1100****************************, 0b****0000000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b1100****************************, 0b****0000000000000000000000000000, 0b000100****** -> { return resubmitted_min_stage; }
+            | 0b1100****************************, 0b****0000000000000000000000000000, 0b00010100**** -> { return resubmitted_min_stage; }
+            | 0b1100****************************, 0b****0000000000000000000000000000, 0b0001010100** -> { return resubmitted_min_stage; }
+            | 0b1100****************************, 0b****0000000000000000000000000000, 0b000101010100 -> { return resubmitted_min_stage; }
+            //(32w0xd0000000 &&& 32w0xf0000000, 32w0 &&& 32w0xfffffff, 12w0..12w314 ) 
+            | 0b1101****************************, 0b****0000000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b1101****************************, 0b****0000000000000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b1101****************************, 0b****0000000000000000000000000000, 0b00010010**** -> { return resubmitted_min_stage; }
+            | 0b1101****************************, 0b****0000000000000000000000000000, 0b000100110*** -> { return resubmitted_min_stage; }
+            | 0b1101****************************, 0b****0000000000000000000000000000, 0b00010011100* -> { return resubmitted_min_stage; }
+            | 0b1101****************************, 0b****0000000000000000000000000000, 0b000100111010 -> { return resubmitted_min_stage; }
+            //(32w0xe0000000 &&& 32w0xf0000000, 32w0 &&& 32w0xfffffff, 12w0..12w291 ) 
+            | 0b1110****************************, 0b****0000000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b1110****************************, 0b****0000000000000000000000000000, 0b0001000***** -> { return resubmitted_min_stage; }
+            | 0b1110****************************, 0b****0000000000000000000000000000, 0b0001001000** -> { return resubmitted_min_stage; }
+            //(32w0xf0000000 &&& 32w0xf0000000, 32w0 &&& 32w0xfffffff, 12w0..12w272 ) 
+            | 0b1111****************************, 0b****0000000000000000000000000000, 0b0000******** -> { return resubmitted_min_stage; }
+            | 0b1111****************************, 0b****0000000000000000000000000000, 0b00010000**** -> { return resubmitted_min_stage; }
+            | 0b1111****************************, 0b****0000000000000000000000000000, 0b000100010000 -> { return resubmitted_min_stage; }
+            | _,_,_ -> { return 0; }    // default is to just forward pkt, we're not adding to cache
+        }
+        else { return 0; }  // not adding to cache, forward pkt
+
+    }
+
+}
+
+/* symbolics */
+symbolic int entries;
+symbolic size logentries;
+symbolic size tables;
+
+global Precisioncache.t<<logentries, tables>> pc = Precisioncache.create(entries);
+//global Precisioncache.t<<7, 2>> pc = Precisioncache.create(128);
+
+entry event ip_in(int key, int<<3>> resubmit, int<<8>> resubmitted_min_stage, int cacheval);
+exit event ip_out();
+
+handle ip_in(int key, int<<3>> resubmit, int<<8>> resubmitted_min_stage, int cacheval) {
+    resubmitted_min_stage = Precisioncache.cache(pc,key,resubmit,resubmitted_min_stage,cacheval);
+    if (resubmitted_min_stage == 0) {
+        generate ip_out();
+    }
+    else {
+        generate ip_in(key, 1, resubmitted_min_stage, key);
+    }
+}
+
+
+
+
